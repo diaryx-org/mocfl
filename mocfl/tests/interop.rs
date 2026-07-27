@@ -3,14 +3,14 @@
 //! `rocfl` is an independent OCFL implementation. Pointing it at an object this
 //! crate wrote is the strongest conformance evidence available short of the
 //! spec's own fixtures: two codebases that share no lineage agreeing on the
-//! same bytes. Set `OCFL_INTEROP_OUT` to a directory to emit one.
+//! same bytes. Set `MOCFL_INTEROP_OUT` to a directory to emit one.
 
-use ocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
+use mocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
 
 #[test]
 fn emit_an_object_for_an_external_validator() {
-    let Some(out) = std::env::var_os("OCFL_INTEROP_OUT") else {
-        eprintln!("skipping: set OCFL_INTEROP_OUT to emit an object");
+    let Some(out) = std::env::var_os("MOCFL_INTEROP_OUT") else {
+        eprintln!("skipping: set MOCFL_INTEROP_OUT to emit an object");
         return;
     };
     let root = std::path::PathBuf::from(out).join("interop-object");

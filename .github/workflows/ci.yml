@@ -26,12 +26,12 @@ jobs:
       # checkout the fixture tests skip rather than fail, so CI must supply it —
       # otherwise the coverage that matters most is silently optional.
       - name: Fetch OCFL fixtures
-        run: git clone --depth 1 https://github.com/OCFL/fixtures ../ocfl-fixtures
+        run: git clone --depth 1 https://github.com/OCFL/fixtures ../mocfl-fixtures
 
       - name: Test
         run: cargo test --all-targets
         env:
-          OCFL_FIXTURES: ../ocfl-fixtures
+          OCFL_FIXTURES: ../mocfl-fixtures
 
       - run: cargo test --doc
 
@@ -52,7 +52,7 @@ jobs:
       - name: Emit an object
         run: cargo test --test interop -- --nocapture
         env:
-          OCFL_INTEROP_OUT: ${{ runner.temp }}/interop
+          MOCFL_INTEROP_OUT: ${{ runner.temp }}/interop
 
       - name: Validate it with rocfl
         run: |

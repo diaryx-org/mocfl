@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ocfl"]
+members = ["mocfl", "mocfl-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,8 +8,8 @@ edition = "2024"
 # Matches the floor the sister crates hold (prov): edition 2024 needs 1.85, and
 # let-chains in stable positions need 1.88.
 rust-version = "1.88"
-repository = "https://github.com/diaryx-org/ocfl"
-homepage = "https://github.com/diaryx-org/ocfl"
+repository = "https://github.com/diaryx-org/mocfl"
+homepage = "https://github.com/diaryx-org/mocfl"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 
@@ -25,3 +25,9 @@ license = "MIT OR Apache-2.0"
 # be contiguous), and hand-mapping is where those constraints get *checked*
 # rather than silently coerced.
 fig = { version = "2.5.3", default-features = false, features = ["json"] }
+
+# The library. The CLI is a thin companion over it and adds nothing the library
+# cannot do — with one exception it owns deliberately: the *clock*. `mocfl` is
+# clockless by design, so the caller supplies every timestamp; the CLI is that
+# caller, and formatting "now" as RFC 3339 is its job.
+mocfl = { path = "mocfl", version = "0.1.0" }

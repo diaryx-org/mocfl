@@ -1,0 +1,23 @@
+[package]
+name = "mocfl-cli"
+description = "Command-line companion for mocfl — inspect, version, and validate an OCFL object."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "../README.md"
+keywords = ["ocfl", "preservation", "archival", "versioning", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+
+# The installed binary is `mocfl`; the crate is `mocfl-cli` so it can be
+# published beside the library without claiming its name. Same split as
+# `moid`/`moid-cli` and `prov`/`prov-cli`.
+[[bin]]
+name = "mocfl"
+path = "src/main.rs"
+
+[dependencies]
+mocfl.workspace = true
+clap = { version = "4.5", features = ["derive"] }

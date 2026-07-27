@@ -9,8 +9,8 @@
 //! history). Point `OCFL_FIXTURES` at a checkout to run these:
 //!
 //! ```sh
-//! git clone --depth 1 https://github.com/OCFL/fixtures /tmp/ocfl-fixtures
-//! OCFL_FIXTURES=/tmp/ocfl-fixtures cargo test --test fixtures
+//! git clone --depth 1 https://github.com/OCFL/fixtures /tmp/mocfl-fixtures
+//! OCFL_FIXTURES=/tmp/mocfl-fixtures cargo test --test fixtures
 //! ```
 //!
 //! Without it, every test here reports as skipped rather than failing — a
@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 
-use ocfl::{Object, StdFs, Violation, validate, validate_deep};
+use mocfl::{Object, StdFs, Violation, validate, validate_deep};
 
 /// The fixtures checkout, or `None` when the suite should skip.
 fn fixtures() -> Option<PathBuf> {
@@ -185,7 +185,7 @@ fn a_foreign_object_survives_being_reread_after_a_rewrite() {
                 continue;
             };
             let json = object.inventory().to_json().unwrap();
-            let back = ocfl::Inventory::parse(json.as_bytes()).unwrap();
+            let back = mocfl::Inventory::parse(json.as_bytes()).unwrap();
             assert_eq!(
                 &back,
                 object.inventory(),

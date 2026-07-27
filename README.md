@@ -1,14 +1,19 @@
 ---
-title: ocfl
+title: mocfl
 author: adammharris
 created: 2026-07-27
 ---
 
-# ocfl
+# mocfl
 
-A dependency-thin Rust implementation of the [Oxford Common File Layout](https://ocfl.io/1.1.0/spec/) **object**.
+*minimal OCFL* — a dependency-thin Rust implementation of the [Oxford Common File Layout](https://ocfl.io/1.1.0/spec/) **object**, named in the spirit of [`moid`](https://github.com/diaryx-org/moid) (*minimal opaque ID*). The `m` is a promise about scope: this implements one part of the standard, deliberately and completely, and says plainly what it leaves out.
 
 OCFL is a specification for storing versioned digital objects on an ordinary filesystem, so that a repository can be rebuilt from the files alone — no database, no application, no proprietary index. An object is a directory that declares what it is, carries a human-readable JSON inventory of every version it has ever had, and stores content addressed by digest.
+
+## Layout
+
+- **`mocfl/`** — the library.
+- **`mocfl-cli/`** — a thin command-line companion (the installed binary is `mocfl`).
 
 ```
 object-root/
@@ -41,7 +46,7 @@ Where the two overlap they should agree exactly — which is why `rocfl` is used
 ## Use
 
 ```rust
-use ocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
+use mocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
 
 let mut object = Object::create(
     StdFs,
@@ -61,15 +66,47 @@ let v1 = object.commit(
 
 assert_eq!(object.read(v1, "letter.md")?, b"Dear Mother,");
 
-// Rename-robust history, answered from the inventory alone — no content read,
-// no similarity heuristics.
-for (version, digest) in object.history("letter.md") {
-    println!("{version}  {digest}");
+// History that follows renames, answered from the inventory alone — no content
+// read, no similarity heuristics.
+for entry in object.history("letter.md") {
+    println!("{}  {}  {}", entry.version, entry.digest, entry.logical_path);
 }
-# Ok::<(), ocfl::Error>(())
+# Ok::<(), mocfl::Error>(())
 ```
 
 Bytes already present under any earlier version are never rewritten, so an unchanged photo across a hundred versions is stored once, and a rename moves nothing at all.
+
+## The CLI
+
+```sh
+cargo install --path mocfl-cli    # installs `mocfl`
+```
+
+The library is the product; the CLI is the way to *see* it. It adds nothing the library cannot do, with one deliberate exception — the **clock**. `mocfl` takes every timestamp from its caller so it stays deterministic and dependency-free; a command-line run is the caller that actually reads the wall clock.
+
+```sh
+mocfl commit archive --from vault --id "ark:/99999/dxg6h4ncm" -m "first capture" --user Adam
+mocfl status archive --from vault      # what would a commit record right now?
+mocfl log archive                      # versions, newest first
+mocfl log archive --path letters/1943-05-scan.jpg   # one file's life, across renames
+mocfl diff archive --from v1 --to v3
+mocfl restore archive --to ./v1-copy --version v1
+mocfl validate archive --deep          # exits 1 on findings
+mocfl show archive                     # identity, versions, what dedup saved
+```
+
+`commit` captures a directory whole, so a file it no longer contains is deleted as of that version — that is what makes a version's state complete rather than a delta. `.git`, `.DS_Store` and friends are skipped unless you pass `--include-all`.
+
+Two commands are worth running just for the intuition:
+
+**`log --path`** follows renames *exactly*. Version control that stores by path has to infer moves after the fact by scoring content similarity — a flag with a threshold that still guesses wrong. OCFL keys state by digest, so a move is not an inference: the same digest is simply listed under a different name. The `logical_path` column shows the name the file had at each point.
+
+```
+v1  6cb38dd2…  letters/scan.jpg
+v3  6cb38dd2…  letters/1943-05-scan.jpg
+```
+
+**`show`** prints stored bytes against logical bytes. The gap between them is everything deduplication saved, and it is the number that makes the model click.
 
 ## No clock, no agent of its own
 
@@ -82,14 +119,14 @@ Reimplementing a specification is only responsible with an independent oracle. T
 1. **The spec's own [test fixtures](https://github.com/OCFL/fixtures)** — objects written by other implementations. Every 1.0 and 1.1 good object must open, read end to end, validate clean, and survive a rewrite unchanged.
 
    ```sh
-   git clone --depth 1 https://github.com/OCFL/fixtures /tmp/ocfl-fixtures
-   OCFL_FIXTURES=/tmp/ocfl-fixtures cargo test
+   git clone --depth 1 https://github.com/OCFL/fixtures /tmp/mocfl-fixtures
+   OCFL_FIXTURES=/tmp/mocfl-fixtures cargo test
    ```
 
 2. **`rocfl validate`** over objects this crate writes — two codebases sharing no lineage agreeing on the same bytes.
 
    ```sh
-   OCFL_INTEROP_OUT=/tmp/interop cargo test --test interop
+   MOCFL_INTEROP_OUT=/tmp/interop cargo test --test interop
    rocfl -r /tmp/interop validate
    ```
 
@@ -103,7 +140,7 @@ Violations are named in prose rather than by the spec's `E###` codes. The codes 
 
 ## Status
 
-Early. The object model, read/write, and both validation depths work and are tested against the spec's fixtures and an independent implementation. Unpublished; the API will move.
+Early. The object model, read/write, both validation depths, and the CLI work and are tested against the spec fixtures and an independent implementation. Unpublished; the API will move.
 
 ## License
 

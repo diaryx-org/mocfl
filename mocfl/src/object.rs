@@ -112,6 +112,18 @@ impl VersionMeta {
     }
 }
 
+/// One point in a file's life, as reported by [`Object::history`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry<'a> {
+    /// The version at which this state began.
+    pub version: VersionNum,
+    /// The content at that version.
+    pub digest: &'a Digest,
+    /// The name the file had *then*, which is not necessarily the name asked
+    /// about — that difference is how a rename shows up.
+    pub logical_path: &'a str,
+}
+
 /// An OCFL object rooted at a directory.
 #[derive(Debug, Clone)]
 pub struct Object<S: Storage> {
@@ -285,26 +297,114 @@ impl<S: Storage> Object<S> {
         Ok(self.fs.read(&join(&self.root, content_path))?)
     }
 
-    /// The version history of one logical path, oldest first.
+    /// The history of one file, oldest first — **following renames**.
     ///
-    /// Consecutive versions with identical bytes collapse into a single entry, so
-    /// the result reads as "what actually changed, and when" rather than one row
-    /// per capture. A path absent at a version simply contributes nothing.
+    /// This is the query the whole layout makes cheap, and the one a
+    /// path-keyed store cannot answer: a file that moved is one life, not two
+    /// unrelated ones. It is answered entirely from the inventory, with no
+    /// content read.
     ///
-    /// This is the query the whole layout makes cheap: it is answered entirely
-    /// from the inventory, with no content read and no heuristics.
-    pub fn history(&self, logical_path: &str) -> Vec<(VersionNum, &Digest)> {
-        let mut out: Vec<(VersionNum, &Digest)> = Vec::new();
-        for (num, version) in &self.inventory.versions {
-            let Some(digest) = version.files().get(logical_path).copied() else {
-                continue;
+    /// ## Why this is exact rather than a guess
+    ///
+    /// Version control that stores by path has to *infer* renames after the
+    /// fact, usually by scoring content similarity, which is why such tools
+    /// offer rename detection as a flag with a threshold and still get it wrong.
+    /// OCFL keys state by digest, so a move is not an inference at all: the same
+    /// digest is simply listed under a different logical path. Walking backwards
+    /// and following that digest is a lookup.
+    ///
+    /// The walk starts at the newest version containing `logical_path` — so a
+    /// deleted file still has a history — and steps back one version at a time.
+    /// When the path is absent from an earlier version, the digest last seen is
+    /// looked for elsewhere in that version; finding it means a rename, and the
+    /// walk continues under the older name. Finding nothing means the lineage
+    /// began here.
+    ///
+    /// Consecutive versions where neither the bytes nor the name changed collapse
+    /// into one entry, so the result reads as "what actually happened, and when"
+    /// rather than one row per capture. A rename *is* something that happened, so
+    /// it is never collapsed away even though the bytes are identical.
+    pub fn history<'a>(&'a self, logical_path: &str) -> Vec<HistoryEntry<'a>> {
+        // Snapshot each version's inverted state once; the walk consults them
+        // repeatedly and rebuilding per step would be quadratic for no reason.
+        let states: Vec<(VersionNum, BTreeMap<&'a str, &'a Digest>)> = self
+            .inventory
+            .versions
+            .iter()
+            .map(|(num, version)| (*num, version.files()))
+            .collect();
+
+        // Start at the newest version holding this path — so a *deleted* file
+        // still has a history — and adopt the key from the inventory rather than
+        // the caller's string, so every name reported afterwards is borrowed
+        // from the object itself.
+        let Some((start, mut current)) =
+            states
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, (_, files))| {
+                    files
+                        .get_key_value(logical_path)
+                        .map(|(name, _)| (index, *name))
+                })
+        else {
+            return Vec::new();
+        };
+
+        let mut newest_first: Vec<HistoryEntry<'a>> = Vec::new();
+        for index in (0..=start).rev() {
+            let (version, files) = &states[index];
+
+            let entry = match files.get(current).copied() {
+                Some(digest) => HistoryEntry {
+                    version: *version,
+                    digest,
+                    logical_path: current,
+                },
+                None => {
+                    // The name is gone from this older version. If the bytes are
+                    // here under another name, the file was renamed *into* the
+                    // name we were following; keep walking under the old one.
+                    let looking_for = match newest_first.last() {
+                        Some(previous) => previous.digest,
+                        None => break,
+                    };
+                    // A rename source must have *vanished*. A name still present
+                    // in the newer version was copied from, not moved — following
+                    // it would graft someone else's past onto this file. (Index
+                    // `index + 1` always exists: the path is present at `start`,
+                    // so this branch only runs below it.)
+                    let newer = &states[index + 1].1;
+                    let Some((older_name, digest)) = files
+                        .iter()
+                        .find(|(name, d)| **d == looking_for && !newer.contains_key(*name))
+                        .map(|(p, d)| (*p, *d))
+                    else {
+                        break;
+                    };
+                    current = older_name;
+                    HistoryEntry {
+                        version: *version,
+                        digest,
+                        logical_path: older_name,
+                    }
+                }
             };
-            if out.last().map(|(_, d)| *d) == Some(digest) {
-                continue;
+
+            // Collapse only when nothing observable changed. A rename carries the
+            // same digest and must still surface as its own event.
+            let unchanged = newest_first.last().is_some_and(|newer| {
+                newer.digest == entry.digest && newer.logical_path == entry.logical_path
+            });
+            if unchanged {
+                newest_first.pop();
             }
-            out.push((*num, digest));
+            newest_first.push(entry);
         }
-        out
+
+        newest_first.reverse();
+        newest_first
     }
 
     /// Write a new version whose logical state is exactly `files`.
@@ -448,7 +548,7 @@ mod tests {
     use crate::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ocfl-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mocfl-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("object")
@@ -582,11 +682,128 @@ mod tests {
 
         let history = obj.history("a.md");
         assert_eq!(
-            history.iter().map(|(v, _)| v.number()).collect::<Vec<_>>(),
+            history
+                .iter()
+                .map(|e| e.version.number())
+                .collect::<Vec<_>>(),
             [1, 3],
             "v2 changed nothing, so it is not a point in this file's history"
         );
         assert!(obj.history("never-existed.md").is_empty());
+    }
+
+    #[test]
+    fn history_follows_a_rename_back_to_the_original_name() {
+        // The query a path-keyed store cannot answer. Asking about the *new*
+        // name must reach back past the rename to where the bytes first
+        // appeared — and must report the name the file had at each point.
+        let root = tmp("history-rename");
+        let mut obj = object(&root);
+        obj.commit(
+            [file("scan.jpg", "bytes")],
+            VersionMeta::at("2026-07-27T09:00:00Z"),
+        )
+        .unwrap();
+        obj.commit(
+            [file("letters/1943-scan.jpg", "bytes")],
+            VersionMeta::at("2026-07-27T10:00:00Z"),
+        )
+        .unwrap();
+        obj.commit(
+            [file("letters/1943-scan.jpg", "rescanned")],
+            VersionMeta::at("2026-07-27T11:00:00Z"),
+        )
+        .unwrap();
+
+        let history = obj.history("letters/1943-scan.jpg");
+        assert_eq!(
+            history
+                .iter()
+                .map(|e| (e.version.number(), e.logical_path))
+                .collect::<Vec<_>>(),
+            [
+                (1, "scan.jpg"),
+                (2, "letters/1943-scan.jpg"),
+                (3, "letters/1943-scan.jpg")
+            ],
+            "one life, under two names"
+        );
+    }
+
+    #[test]
+    fn a_rename_is_an_event_even_though_the_bytes_are_identical() {
+        // Collapsing is about "nothing observable changed". A move changed the
+        // name, so it must survive the collapse that identical bytes would
+        // otherwise trigger.
+        let root = tmp("history-rename-event");
+        let mut obj = object(&root);
+        obj.commit(
+            [file("old.md", "same")],
+            VersionMeta::at("2026-07-27T09:00:00Z"),
+        )
+        .unwrap();
+        obj.commit(
+            [file("new.md", "same")],
+            VersionMeta::at("2026-07-27T10:00:00Z"),
+        )
+        .unwrap();
+
+        let history = obj.history("new.md");
+        assert_eq!(history.len(), 2, "{history:?}");
+        assert_eq!(history[0].digest, history[1].digest, "bytes never changed");
+        assert_eq!(history[0].logical_path, "old.md");
+        assert_eq!(history[1].logical_path, "new.md");
+    }
+
+    #[test]
+    fn a_deleted_file_still_has_a_history() {
+        // The walk starts at the newest version that *has* the path, not at the
+        // head — otherwise deleting something would erase its past.
+        let root = tmp("history-deleted");
+        let mut obj = object(&root);
+        obj.commit(
+            [file("keep.md", "k"), file("gone.md", "g")],
+            VersionMeta::at("2026-07-27T09:00:00Z"),
+        )
+        .unwrap();
+        obj.commit(
+            [file("keep.md", "k")],
+            VersionMeta::at("2026-07-27T10:00:00Z"),
+        )
+        .unwrap();
+
+        let history = obj.history("gone.md");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].version, VersionNum::FIRST);
+    }
+
+    #[test]
+    fn history_does_not_follow_a_digest_that_merely_appears_elsewhere() {
+        // `copy.md` is created at v2 holding bytes that already existed under
+        // `original.md`. That is a copy, not a rename: `original.md` never went
+        // away, so `copy.md`'s life starts at v2.
+        let root = tmp("history-copy");
+        let mut obj = object(&root);
+        obj.commit(
+            [file("original.md", "shared")],
+            VersionMeta::at("2026-07-27T09:00:00Z"),
+        )
+        .unwrap();
+        obj.commit(
+            [file("original.md", "shared"), file("copy.md", "shared")],
+            VersionMeta::at("2026-07-27T10:00:00Z"),
+        )
+        .unwrap();
+
+        let history = obj.history("copy.md");
+        assert_eq!(
+            history
+                .iter()
+                .map(|e| e.version.number())
+                .collect::<Vec<_>>(),
+            [2],
+            "a copy is not a rename"
+        );
     }
 
     #[test]

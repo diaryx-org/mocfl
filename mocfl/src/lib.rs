@@ -51,7 +51,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use ocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
+//! use mocfl::{DigestAlgorithm, Object, StdFs, VersionMeta};
 //!
 //! let mut object = Object::create(
 //!     StdFs,
@@ -70,11 +70,13 @@
 //!
 //! assert_eq!(object.read(v1, "letter.md")?, b"Dear Mother,");
 //!
-//! // Rename-robust history, answered from the inventory alone.
-//! for (version, digest) in object.history("letter.md") {
-//!     println!("{version}  {digest}");
+//! // History that follows renames — answered from the inventory alone, with no
+//! // content read and no similarity guessing. `logical_path` is the name the
+//! // file had *at that version*, so a move is visible rather than inferred.
+//! for entry in object.history("letter.md") {
+//!     println!("{}  {}  {}", entry.version, entry.digest, entry.logical_path);
 //! }
-//! # Ok::<(), ocfl::Error>(())
+//! # Ok::<(), mocfl::Error>(())
 //! ```
 //!
 //! ## Timestamps and agents
@@ -102,7 +104,7 @@ pub use inventory::{
     DEFAULT_CONTENT_DIRECTORY, INVENTORY_TYPE, Inventory, User, Version, VersionNum, check_path,
 };
 pub use object::{
-    DECLARATION, DECLARATION_PREFIX, INVENTORY, OCFL_VERSION, Object, SUPPORTED_VERSIONS,
-    VersionMeta, declaration_name,
+    DECLARATION, DECLARATION_PREFIX, HistoryEntry, INVENTORY, OCFL_VERSION, Object,
+    SUPPORTED_VERSIONS, VersionMeta, declaration_name,
 };
 pub use validate::{Violation, summarize, validate, validate_deep};
