@@ -41,6 +41,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create an empty object.
+    ///
+    /// An OCFL object must have at least one version, so this is not an empty
+    /// *directory* — it is a real `v1` whose state happens to be empty, which the
+    /// spec allows and its own fixtures include. The object is valid and
+    /// checksummed the moment this returns; a later `commit` adds `v2`.
+    ///
+    /// Not required: `commit --id` creates an object too. This exists for the
+    /// familiar create-then-fill order, and for recording the moment an archive
+    /// was established as its own event.
+    Init {
+        /// The object directory to create.
+        object: PathBuf,
+        /// The object's identifier — permanent and external: a URI, an ARK,
+        /// anything opaque and stable.
+        #[arg(long)]
+        id: String,
+        /// A note describing this version.
+        #[arg(short, long)]
+        message: Option<String>,
+        /// The name of the agent responsible.
+        #[arg(long)]
+        user: Option<String>,
+        /// A URI for that agent, e.g. `mailto:someone@example.org`.
+        #[arg(long)]
+        email: Option<String>,
+        /// Timestamp to record (RFC 3339). Defaults to now.
+        #[arg(long)]
+        at: Option<String>,
+    },
+
     /// Record a directory's current contents as a new version.
     ///
     /// The directory is captured whole: a file it no longer contains is deleted
@@ -72,6 +103,9 @@ enum Command {
         /// Capture `.git`, `.DS_Store` and friends too.
         #[arg(long)]
         include_all: bool,
+        /// Record a version that removes every file, when the directory is empty.
+        #[arg(long)]
+        allow_empty: bool,
     },
 
     /// Show an object's versions, or one file's history across them.
@@ -180,6 +214,14 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Fallible {
     match cli.command {
+        Command::Init {
+            object,
+            id,
+            message,
+            user,
+            email,
+            at,
+        } => init(object, id, message, user, email, at),
         Command::Commit {
             object,
             from,
@@ -189,7 +231,18 @@ fn run(cli: Cli) -> Fallible {
             email,
             at,
             include_all,
-        } => commit(object, from, id, message, user, email, at, include_all),
+            allow_empty,
+        } => commit(
+            object,
+            from,
+            id,
+            message,
+            user,
+            email,
+            at,
+            include_all,
+            allow_empty,
+        ),
         Command::Log { object, path } => log(object, path),
         Command::Ls {
             object,
@@ -285,6 +338,23 @@ fn excludes(include_all: bool) -> Vec<String> {
     }
 }
 
+/// Assemble the version metadata every writing command records.
+fn meta(
+    message: Option<String>,
+    user: Option<String>,
+    email: Option<String>,
+    at: Option<String>,
+) -> Result<VersionMeta, Box<dyn std::error::Error>> {
+    // The clock lives here, not in the library — see `time`.
+    let mut meta = VersionMeta::at(at.unwrap_or_else(time::now));
+    meta.message = message;
+    match (user, email) {
+        (Some(name), address) => Ok(meta.user(name, address)),
+        (None, None) => Ok(meta),
+        (None, Some(_)) => Err("--email needs --user; an address with no name names nobody".into()),
+    }
+}
+
 fn report(changes: &tree::Changes) {
     for (from, to) in &changes.renamed {
         println!("R\t{from} -> {to}");
@@ -302,6 +372,43 @@ fn report(changes: &tree::Changes) {
 
 // ---- commands ----
 
+fn init(
+    object_path: PathBuf,
+    id: String,
+    message: Option<String>,
+    user: Option<String>,
+    email: Option<String>,
+    at: Option<String>,
+) -> Fallible {
+    if object_path.is_dir()
+        && std::fs::read_dir(&object_path)?.any(|e| {
+            e.map(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("0=ocfl_object_")
+            })
+            .unwrap_or(false)
+        })
+    {
+        return Err(format!("{} is already an OCFL object", object_path.display()).into());
+    }
+
+    let mut object = Object::create(StdFs, &object_path, &id, DigestAlgorithm::Sha256);
+    // An empty `v1` — valid OCFL, and what the spec's own `minimal_no_content`
+    // fixture looks like. No `content/` directory is written at all.
+    let version = object.commit(
+        std::iter::empty(),
+        meta(
+            message.or_else(|| Some("object created".to_string())),
+            user,
+            email,
+            at,
+        )?,
+    )?;
+    println!("{version}\t{id}\t{}", object_path.display());
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn commit(
     object_path: PathBuf,
@@ -312,6 +419,7 @@ fn commit(
     email: Option<String>,
     at: Option<String>,
     include_all: bool,
+    allow_empty: bool,
 ) -> Fallible {
     if !from.is_dir() {
         return Err(format!("{} is not a directory", from.display()).into());
@@ -324,17 +432,21 @@ fn commit(
     };
 
     let entries = tree::walk(&from, &excludes(include_all))?;
-    if entries.is_empty() {
-        return Err(format!("{} holds no files to record", from.display()).into());
+    // An empty version is legal OCFL, so the guard is not about emptiness — it is
+    // about *destruction*. Committing an empty directory over an object that
+    // holds files removes every one of them, which is a real thing to want and
+    // also exactly what a mistyped `--from` looks like.
+    if entries.is_empty() && !before.is_empty() && !allow_empty {
+        return Err(format!(
+            "{} is empty; committing it would remove all {} file(s) from the object. \
+             Pass --allow-empty if that is what you mean.",
+            from.display(),
+            before.len()
+        )
+        .into());
     }
 
-    let mut meta = VersionMeta::at(at.unwrap_or_else(time::now));
-    meta.message = message;
-    if let Some(name) = user {
-        meta = meta.user(name, email);
-    } else if email.is_some() {
-        return Err("--email needs --user; an address with no name names nobody".into());
-    }
+    let meta = meta(message, user, email, at)?;
 
     // Read lazily, one file at a time, so a large tree is never all in memory.
     let mut failed = None;

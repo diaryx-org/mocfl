@@ -85,7 +85,8 @@ cargo install --path mocfl-cli    # installs `mocfl`
 The library is the product; the CLI is the way to *see* it. It adds nothing the library cannot do, with one deliberate exception — the **clock**. `mocfl` takes every timestamp from its caller so it stays deterministic and dependency-free; a command-line run is the caller that actually reads the wall clock.
 
 ```sh
-mocfl commit archive --from vault --id "ark:/99999/dxg6h4ncm" -m "first capture" --user Adam
+mocfl init archive --id "ark:/99999/dxg6h4ncm" --user Adam   # or skip it — see below
+mocfl commit archive --from vault -m "first capture" --user Adam
 mocfl status archive --from vault      # what would a commit record right now?
 mocfl log archive                      # versions, newest first
 mocfl log archive --path letters/1943-05-scan.jpg   # one file's life, across renames
@@ -95,7 +96,30 @@ mocfl validate archive --deep          # exits 1 on findings
 mocfl show archive                     # identity, versions, what dedup saved
 ```
 
+### Creating an object
+
+Two ways, because there are two moments people mean by "create":
+
+- **`mocfl commit <object> --from <dir> --id <identifier>`** — create and fill in one step. The `--id` is only consulted when there is no object there yet.
+- **`mocfl init <object> --id <identifier>`** — establish an empty archive now, fill it later.
+
+`init` does not write an empty *directory*. An OCFL object must have at least one version, so it writes a real `v1` whose state is empty — valid OCFL, and byte-for-byte the shape of the spec's own `minimal_no_content` fixture, right down to having no `content/` directory:
+
+```
+archive/0=ocfl_object_1.1
+archive/inventory.json
+archive/inventory.json.sha256
+archive/v1/inventory.json
+archive/v1/inventory.json.sha256
+```
+
+The object is valid and checksummed the moment `init` returns. Its value is that "the archive was established" becomes its own dated, attributed event rather than being folded into whatever happened to be captured first.
+
+### Committing
+
 `commit` captures a directory whole, so a file it no longer contains is deleted as of that version — that is what makes a version's state complete rather than a delta. `.git`, `.DS_Store` and friends are skipped unless you pass `--include-all`.
+
+Committing an *empty* directory over an object that holds files removes every one of them. That is a legitimate thing to want and also exactly what a mistyped `--from` looks like, so it requires `--allow-empty`. The guard is about destruction, not emptiness: an empty first version needs no flag, because it deletes nothing.
 
 Two commands are worth running just for the intuition:
 

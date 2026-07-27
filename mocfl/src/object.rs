@@ -585,6 +585,41 @@ mod tests {
     }
 
     #[test]
+    fn an_object_may_be_created_with_an_empty_first_version() {
+        // Valid OCFL, and the shape of the spec's own `minimal_no_content`
+        // fixture: a real v1 whose state is empty, with no `content/` directory
+        // written at all. This is what lets a caller establish an archive before
+        // it holds anything.
+        let root = tmp("empty-first-version");
+        let mut obj = object(&root);
+        let v1 = obj
+            .commit(
+                std::iter::empty(),
+                VersionMeta::at("2026-07-27T09:00:00Z").message("object created"),
+            )
+            .unwrap();
+
+        assert_eq!(v1, VersionNum::FIRST);
+        assert!(obj.files_at(v1).unwrap().is_empty());
+        assert!(obj.inventory().manifest.is_empty());
+        assert!(root.join("v1/inventory.json").exists());
+        assert!(
+            !root.join("v1/content").exists(),
+            "no content means no content directory"
+        );
+        assert_eq!(crate::validate::validate(&obj).unwrap(), vec![]);
+
+        // ...and it accepts real content afterwards.
+        let v2 = obj
+            .commit(
+                [file("first.md", "hello")],
+                VersionMeta::at("2026-07-27T10:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(obj.read(v2, "first.md").unwrap(), b"hello");
+    }
+
+    #[test]
     fn nothing_is_written_before_the_first_commit() {
         // An object with no versions is invalid per the spec, so `create` must
         // not leave a half-formed directory behind.
