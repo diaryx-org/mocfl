@@ -1,0 +1,19 @@
+[package]
+name = "ocfl"
+description = "A dependency-thin implementation of the Oxford Common File Layout (OCFL) object."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "../README.md"
+keywords = ["ocfl", "preservation", "archival", "versioning", "fixity"]
+categories = ["filesystem", "data-structures"]
+
+[lib]
+name = "ocfl"
+path = "src/lib.rs"
+
+[dependencies]
+fig.workspace = true

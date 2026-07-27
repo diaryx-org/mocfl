@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["ocfl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Matches the floor the sister crates hold (prov): edition 2024 needs 1.85, and
+# let-chains in stable positions need 1.88.
+rust-version = "1.88"
+repository = "https://github.com/diaryx-org/ocfl"
+homepage = "https://github.com/diaryx-org/ocfl"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# The inventory is JSON, and fig is the family's parser/printer for config
+# formats. Only the JSON backend is compiled in — every other language fig can
+# speak is left out of `libfig.a`.
+#
+# No `serde` feature: the inventory model is mapped to and from fig's `Value`
+# tree by hand. That is deliberate. The spec constrains the shape of
+# `inventory.json` far more tightly than a derive can express (digests as map
+# *keys*, a `head` that must name an existing version, version numbers that must
+# be contiguous), and hand-mapping is where those constraints get *checked*
+# rather than silently coerced.
+fig = { version = "2.5.3", default-features = false, features = ["json"] }

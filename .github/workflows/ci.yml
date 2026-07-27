@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test / clippy / fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+      # The spec's own fixtures, written by other implementations. Without this
+      # checkout the fixture tests skip rather than fail, so CI must supply it —
+      # otherwise the coverage that matters most is silently optional.
+      - name: Fetch OCFL fixtures
+        run: git clone --depth 1 https://github.com/OCFL/fixtures ../ocfl-fixtures
+
+      - name: Test
+        run: cargo test --all-targets
+        env:
+          OCFL_FIXTURES: ../ocfl-fixtures
+
+      - run: cargo test --doc
+
+  interop:
+    name: rocfl cross-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # An independent OCFL implementation, as a CI tool only — never a
+      # dependency of this crate. Two codebases sharing no lineage must agree on
+      # the same bytes.
+      - name: Install rocfl
+        run: cargo install rocfl --no-default-features --locked
+
+      - name: Emit an object
+        run: cargo test --test interop -- --nocapture
+        env:
+          OCFL_INTEROP_OUT: ${{ runner.temp }}/interop
+
+      - name: Validate it with rocfl
+        run: |
+          set -o pipefail
+          rocfl -r "${{ runner.temp }}/interop" validate 2>&1 | tee report.txt
+          # The storage-root declaration is expected to be absent: this crate
+          # implements objects, not storage roots. Any *object* error is a
+          # genuine conformance failure.
+          if grep -q "Invalid objects:  *[1-9]" report.txt; then
+            echo "::error::rocfl reported an invalid object"
+            exit 1
+          fi
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: echo "version=$(grep '^rust-version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo check --all-targets
