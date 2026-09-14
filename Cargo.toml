@@ -24,7 +24,7 @@ license = "MIT OR Apache-2.0"
 # *keys*, a `head` that must name an existing version, version numbers that must
 # be contiguous), and hand-mapping is where those constraints get *checked*
 # rather than silently coerced.
-fig = { version = "2.5.3", default-features = false, features = ["json"] }
+fig = { version = "4", default-features = false, features = ["json"] }
 
 # The library. The CLI is a thin companion over it and adds nothing the library
 # cannot do — with one exception it owns deliberately: the *clock*. `mocfl` is
