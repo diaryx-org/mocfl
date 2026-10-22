@@ -2,6 +2,8 @@
 title: mocfl
 author: adammharris
 created: 2026-07-27
+contents:
+- '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # mocfl
