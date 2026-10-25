@@ -100,55 +100,37 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "fig"
-version = "4.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7851c277261b742c3958c482ef3d762d460fb7286890c3ca2ff2a17655a9d23a"
+checksum = "1912585cea7b84fd1cbacdd0ee85c57b12f54cc46a917145d97a62b95c3eafab"
 dependencies = [
- "fig-sys",
+ "fig-core",
 ]
 
 [[package]]
-name = "fig-sys"
-version = "4.0.0"
+name = "fig-core"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77025202ee774d64cb9f65664456b11a30483b4afaba2042a7049ee3d07b8c7d"
+checksum = "310da8e88299b38abe3aadfa1aecce5c46a93dc767ee38900f23e9f630e05290"
 dependencies = [
- "fig-sys-linux-arm64-gnu",
- "fig-sys-linux-x64-gnu",
- "fig-sys-macos-arm64",
- "fig-sys-wasm32",
- "fig-sys-windows-x64-msvc",
+ "fig-kit",
 ]
 
 [[package]]
-name = "fig-sys-linux-arm64-gnu"
-version = "4.0.0"
+name = "fig-json"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dd2f87336414bebd700de027d73643aad8233f5f5d9f38095b42f4a9777d868"
+checksum = "1a4baefafc7c88ebacda7d1d2423eba469828d490199462f032bfbf3db6637b7"
+dependencies = [
+ "fig",
+ "fig-kit",
+]
 
 [[package]]
-name = "fig-sys-linux-x64-gnu"
-version = "4.0.0"
+name = "fig-kit"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c82efb10916b8bae0b8b06864531a5ed59c9b9dcb00fe22b5ee1ec7f56cb52e2"
-
-[[package]]
-name = "fig-sys-macos-arm64"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2606faade4c97de8b7206b1a3adfdc944dff3f405882fbfd64e783ce0a3ca0b"
-
-[[package]]
-name = "fig-sys-wasm32"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b75e57d0ae43a0b32ae2b4300114d30503863da75a4c609f8d978f29cf3956eb"
-
-[[package]]
-name = "fig-sys-windows-x64-msvc"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7f4c42715367913c17341acfcdd87057bb212acdd28167891576df4fdb560d3"
+checksum = "a0005cbc0579d07474d9a452c76f23cbf55ba6c82dd84c7e7ed5c38ace903a7a"
 
 [[package]]
 name = "heck"
@@ -167,6 +149,7 @@ name = "mocfl"
 version = "0.1.0"
 dependencies = [
  "fig",
+ "fig-json",
 ]
 
 [[package]]

@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use fig::{Format, SerializeOptions, Value};
+use fig::{SerializeOptions, Value};
 
 use crate::digest::{Digest, DigestAlgorithm};
 use crate::error::{Error, Result};
@@ -275,7 +275,7 @@ impl Inventory {
 
     /// Parse inventory bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let value = fig::Document::parse(bytes, Format::Json)?.to_value()?;
+        let value = fig::Document::parse(bytes, fig_json::format()?)?.to_value()?;
         Self::from_value(&value)
     }
 
@@ -287,7 +287,7 @@ impl Inventory {
     pub fn to_json(&self) -> Result<String> {
         let mut json = self
             .to_value()
-            .serialize_with(Format::Json, SerializeOptions::pretty(2))?;
+            .serialize_with(fig_json::format()?, SerializeOptions::pretty(2))?;
         if !json.ends_with('\n') {
             json.push('\n');
         }

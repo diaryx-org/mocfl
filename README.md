@@ -33,7 +33,7 @@ object-root/
 
 [`rocfl`](https://github.com/pwinckles/rocfl) is the established Rust OCFL tool and is more complete than this crate: storage roots, layout extensions, S3, staging, locks. It is also repository-scale, carrying around forty dependencies including a deprecated AWS SDK, and its last release was 2022.
 
-This crate serves the other end: **one object, embedded in an application, on a device.** It has exactly one dependency ([`fig`](https://github.com/diaryx-org/fig), for JSON), computes its own SHA-256, and needs no toolchain beyond Rust.
+This crate serves the other end: **one object, embedded in an application, on a device.** It depends on nothing but [fig](https://github.com/diaryx-org/fig) for JSON (`fig` and its `fig-json` language), computes its own SHA-256, and needs no toolchain beyond Rust.
 
 Where the two overlap they should agree exactly — which is why `rocfl` is used as this crate's independent validator in CI rather than treated as a competitor.
 

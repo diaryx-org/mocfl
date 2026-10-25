@@ -1,13 +1,23 @@
 ---
 title: CI cannot build fig 4's JSON-only core
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: mocfl asks fig 4 for JSON alone, which fig-sys compiles from Zig source; CI installs no Zig, so every job on main has failed since the move to fig 4
 created: 2026-10-22
-updated: 2026-10-22
+updated: 2026-10-25
 ---
 
 # CI cannot build fig 4's JSON-only core
+
+**Status: done**, by `build(deps)!: move to fig 7, whose JSON is Rust`.
+mocfl asks for `fig` 7 with no features and for `fig-json` 7 with only its
+`fig` binding, and reads and writes `inventory.json` through
+`fig_json::format()`. Nothing in the lock builds a `fig-sys`, and the three
+jobs (fmt, clippy and the fixture tests, the rocfl interop check, and the
+1.88 build) and the doc tests pass with no `zig` on `PATH`. Stable clippy had
+meanwhile grown `chunks_exact_to_as_chunks`, which the SHA-256 compressor
+failed. `refactor: read SHA-256 blocks and words as fixed-size chunks` fixes
+that.
 
 Every CI job on `main` has failed since `build(deps)!: move to fig 4`
 (runs 36016983521 and 38636310973): `test / clippy / fmt`, `rocfl
