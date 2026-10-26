@@ -15,8 +15,9 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # The inventory is JSON, and fig is the family's parser/printer for config
-# formats. Only the JSON backend is compiled in — every other language fig can
-# speak is left out of `libfig.a`.
+# formats. Since fig 7 each language is a crate of its own, so `fig` is the core
+# and `fig-json` the one language this crate asks for — every other language fig
+# can speak is never compiled. Both are Rust throughout: no Zig, no C.
 #
 # No `serde` feature: the inventory model is mapped to and from fig's `Value`
 # tree by hand. That is deliberate. The spec constrains the shape of
@@ -24,7 +25,8 @@ license = "MIT OR Apache-2.0"
 # *keys*, a `head` that must name an existing version, version numbers that must
 # be contiguous), and hand-mapping is where those constraints get *checked*
 # rather than silently coerced.
-fig = { version = "4", default-features = false, features = ["json"] }
+fig = { version = "7", default-features = false }
+fig-json = { version = "7", default-features = false, features = ["fig"] }
 
 # The library. The CLI is a thin companion over it and adds nothing the library
 # cannot do — with one exception it owns deliberately: the *clock*. `mocfl` is

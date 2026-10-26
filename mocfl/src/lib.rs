@@ -27,11 +27,11 @@
 //! forty dependencies including a deprecated AWS SDK.
 //!
 //! This crate serves the other end: **one object, embedded in an application, on
-//! a device**. It has exactly one dependency ([`fig`], for JSON), computes its own
-//! SHA-256, and compiles without a toolchain beyond Rust. Where the two overlap
-//! they should agree exactly — which is why `rocfl` is the intended independent
-//! validator for objects this crate writes, rather than a competitor to route
-//! around.
+//! a device**. It depends on nothing but fig for JSON ([`fig`] and its
+//! `fig-json` language), computes its own SHA-256, and compiles without a
+//! toolchain beyond Rust. Where the two overlap they should agree exactly —
+//! which is why `rocfl` is the intended independent validator for objects this
+//! crate writes, rather than a competitor to route around.
 //!
 //! ## Scope
 //!
