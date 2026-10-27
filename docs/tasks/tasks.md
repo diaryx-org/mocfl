@@ -4,8 +4,9 @@ part_of: '[mocfl](/README.md)'
 description: Deferred work in mocfl — one file each, every one with a done state
 contents:
 - '[CI cannot build fig 4''s JSON-only core](/docs/tasks/ci-cannot-build-fig-json-only.md)'
+- '[CI''s rocfl check fails on a valid object](/docs/tasks/rocfl-check-fails-on-a-valid-object.md)'
 created: 2026-10-22
-updated: 2026-10-22
+updated: 2026-10-27
 ---
 
 # Tasks
