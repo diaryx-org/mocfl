@@ -5,8 +5,9 @@ description: Deferred work in mocfl — one file each, every one with a done sta
 contents:
 - '[CI cannot build fig 4''s JSON-only core](/docs/tasks/ci-cannot-build-fig-json-only.md)'
 - '[CI''s rocfl check fails on a valid object](/docs/tasks/rocfl-check-fails-on-a-valid-object.md)'
+- '[Commit accepts logical paths that conflict](/docs/tasks/commit-accepts-conflicting-logical-paths.md)'
 created: 2026-10-22
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # Tasks
