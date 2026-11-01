@@ -1,13 +1,19 @@
 ---
 title: CI's rocfl check fails on a valid object
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: rocfl validates the interop directory as a storage root, finds no root declaration, and exits 2, so the `rocfl cross-validation` job fails on main although rocfl finds the object valid
 created: 2026-10-27
-updated: 2026-10-27
+updated: 2026-11-01
 ---
 
 # CI's rocfl check fails on a valid object
+
+**Status: done**, by `ci: validate the interop object alone with rocfl`. The
+`Validate it with rocfl` step runs `rocfl -r "$RUNNER_TEMP/interop" validate
+--paths interop-object` and lets rocfl's exit status decide; the `pipefail`,
+`tee` and `grep` are gone. The README's interop instructions name the object
+the same way.
 
 The `rocfl cross-validation` job has failed on every push to `main`. It
 failed in `Emit an object` until `build(deps)!: move to fig 7, whose JSON is

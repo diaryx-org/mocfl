@@ -55,16 +55,12 @@ jobs:
           MOCFL_INTEROP_OUT: ${{ runner.temp }}/interop
 
       - name: Validate it with rocfl
-        run: |
-          set -o pipefail
-          rocfl -r "${{ runner.temp }}/interop" validate 2>&1 | tee report.txt
-          # The storage-root declaration is expected to be absent: this crate
-          # implements objects, not storage roots. Any *object* error is a
-          # genuine conformance failure.
-          if grep -q "Invalid objects:  *[1-9]" report.txt; then
-            echo "::error::rocfl reported an invalid object"
-            exit 1
-          fi
+        # This crate implements objects, not storage roots, so the directory has
+        # no root declaration. Validating the whole directory reports that as a
+        # storage-root error and exits 2 however valid the object is. Naming the
+        # object checks it alone, and rocfl's exit status is the verdict: 0 for
+        # a valid object (warnings included), non-zero for any object error.
+        run: rocfl -r "${{ runner.temp }}/interop" validate --paths interop-object
 
   msrv:
     name: msrv
