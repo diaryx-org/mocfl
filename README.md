@@ -153,8 +153,10 @@ Reimplementing a specification is only responsible with an independent oracle. T
 
    ```sh
    MOCFL_INTEROP_OUT=/tmp/interop cargo test --test interop
-   rocfl -r /tmp/interop validate
+   rocfl -r /tmp/interop validate --paths interop-object
    ```
+
+   Name the object: `/tmp/interop` is not a storage root, and validating it whole fails on the missing root declaration however valid the object is.
 
 SHA-256 is pinned to the FIPS 180-4 known-answer vectors, so the hash is *checked*, not trusted.
 
