@@ -1,13 +1,23 @@
 ---
 title: Commit accepts logical paths that conflict
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: Object::commit takes one logical path twice, or a path and a path beneath it; the first writes an object its own deep validation calls corrupt, the second fails half-written or records an inventory OCFL forbids
 created: 2026-10-28
-updated: 2026-10-28
+updated: 2026-11-02
 ---
 
 # Commit accepts logical paths that conflict
+
+**Status: done**, by `fix(object): refuse a commit whose logical paths
+conflict`. `commit` checks the version's logical paths against each other
+after staging and before any write, and refuses a path given twice, or a
+path with another beneath it, with `Error::Conflict` naming both. Two paths
+that only share a leading string (`a`, `a-b`) still commit. `validate`
+reports `LogicalPathConflict` for a version's state and `ContentPathConflict`
+for the manifest when it reads an object some other tool wrote. The three
+cases below are tests in `src/object.rs`, and the two violations have tests
+in `src/validate.rs`.
 
 OCFL 1.1 says that within a version, logical paths must be unique and
 non-conflicting: one file's logical path cannot be the start of another's

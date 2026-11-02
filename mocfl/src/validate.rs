@@ -30,7 +30,7 @@ use std::fmt;
 use crate::digest::Digest;
 use crate::error::Result;
 use crate::fs::{Storage, join};
-use crate::inventory::VersionNum;
+use crate::inventory::{VersionNum, conflicting_paths};
 use crate::object::{INVENTORY, Object, declaration_name};
 
 /// One way an object fails to conform.
@@ -105,6 +105,33 @@ pub enum Violation {
         /// The algorithm that could not be computed.
         algorithm: String,
     },
+    /// A version's state lists one logical path twice, or a path and another
+    /// beneath it, so it describes a tree no filesystem can hold.
+    LogicalPathConflict {
+        /// The version whose state conflicts.
+        version: VersionNum,
+        /// The shorter path, or the repeated one.
+        path: String,
+        /// The path equal to `path` or beneath it.
+        other: String,
+    },
+    /// The manifest lists one content path twice, or a path and another
+    /// beneath it, so one of them cannot be on disk as the manifest says.
+    ContentPathConflict {
+        /// The shorter path, or the repeated one.
+        path: String,
+        /// The path equal to `path` or beneath it.
+        other: String,
+    },
+}
+
+/// Say how `other` conflicts with `path`, for a violation's message.
+fn describe_conflict(path: &str, other: &str) -> String {
+    if path == other {
+        format!("{path} is listed twice")
+    } else {
+        format!("{other} lies beneath {path}, which is a file")
+    }
 }
 
 impl fmt::Display for Violation {
@@ -149,6 +176,20 @@ impl fmt::Display for Violation {
             Self::ContentUnverifiable { algorithm } => write!(
                 f,
                 "content is addressed with {algorithm}, which this crate cannot compute — not verified"
+            ),
+            Self::LogicalPathConflict {
+                version,
+                path,
+                other,
+            } => write!(
+                f,
+                "logical paths at {version} conflict: {}",
+                describe_conflict(path, other)
+            ),
+            Self::ContentPathConflict { path, other } => write!(
+                f,
+                "manifest content paths conflict: {}",
+                describe_conflict(path, other)
             ),
         }
     }
@@ -257,6 +298,26 @@ fn check<S: Storage>(object: &Object<S>, deep: bool) -> Result<Vec<Violation>> {
         }
     }
 
+    // ---- each version's logical paths, and the manifest's content paths, make
+    // a tree: none repeats and none lies beneath another ----
+    for (version, record) in &inventory.versions {
+        let paths = record.state.values().flatten().map(String::as_str);
+        for (path, other) in conflicting_paths(paths) {
+            found.push(Violation::LogicalPathConflict {
+                version: *version,
+                path: path.to_string(),
+                other: other.to_string(),
+            });
+        }
+    }
+    let content_paths = inventory.manifest.values().flatten().map(String::as_str);
+    for (path, other) in conflicting_paths(content_paths) {
+        found.push(Violation::ContentPathConflict {
+            path: path.to_string(),
+            other: other.to_string(),
+        });
+    }
+
     // ---- content is where the manifest says, and (deep) still itself ----
     if deep && !algorithm.is_computable() {
         found.push(Violation::ContentUnverifiable {
@@ -304,6 +365,8 @@ pub fn summarize(violations: &[Violation]) -> BTreeMap<&'static str, usize> {
             Violation::ContentMissing { .. } => "content-missing",
             Violation::ContentDigestMismatch { .. } => "content-digest-mismatch",
             Violation::ContentUnverifiable { .. } => "content-unverifiable",
+            Violation::LogicalPathConflict { .. } => "logical-path-conflict",
+            Violation::ContentPathConflict { .. } => "content-path-conflict",
         };
         *counts.entry(key).or_insert(0) += 1;
     }
@@ -315,6 +378,7 @@ mod tests {
     use super::*;
     use crate::digest::DigestAlgorithm;
     use crate::fs::StdFs;
+    use crate::inventory::Inventory;
     use crate::object::VersionMeta;
     use std::path::PathBuf;
 
@@ -435,6 +499,89 @@ mod tests {
         assert!(
             found.iter().any(
                 |v| matches!(v, Violation::UnexpectedVersionDirectory { name } if name == "v3")
+            ),
+            "{found:?}"
+        );
+    }
+
+    /// Rewrite the object's inventory (and its sidecar) with `edit` applied,
+    /// as another tool might have written it, and open it again.
+    fn rewritten(root: &std::path::Path, edit: impl FnOnce(&mut Inventory)) -> Object<StdFs> {
+        let mut inventory =
+            Inventory::parse(&std::fs::read(root.join(INVENTORY)).unwrap()).unwrap();
+        edit(&mut inventory);
+        let json = inventory.to_json().unwrap();
+        let digest = DigestAlgorithm::Sha256.digest(json.as_bytes()).unwrap();
+        std::fs::write(root.join(INVENTORY), &json).unwrap();
+        std::fs::write(
+            root.join("inventory.json.sha256"),
+            format!("{digest}  {INVENTORY}\n"),
+        )
+        .unwrap();
+        Object::open(StdFs, root).unwrap()
+    }
+
+    #[test]
+    fn a_state_holding_a_path_and_a_path_beneath_it_is_reported() {
+        let root = tmp("logical-conflict");
+        let obj = committed(&root);
+        let v2 = VersionNum::new(2);
+        let digest = obj.inventory().versions[&v2].files()["a.md"].clone();
+        let obj = rewritten(&root, |inventory| {
+            let state = &mut inventory.versions.get_mut(&v2).unwrap().state;
+            state.get_mut(&digest).unwrap().push("a.md/b".into());
+        });
+
+        let found = validate(&obj).unwrap();
+        assert!(
+            found.contains(&Violation::LogicalPathConflict {
+                version: v2,
+                path: "a.md".into(),
+                other: "a.md/b".into(),
+            }),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_state_listing_one_path_under_two_digests_is_reported() {
+        // What a commit of `a` twice used to write: each digest names `a`.
+        let root = tmp("logical-twice");
+        let obj = committed(&root);
+        let v2 = VersionNum::new(2);
+        let v1_digest = obj.inventory().versions[&VersionNum::FIRST].files()["a.md"].clone();
+        let obj = rewritten(&root, |inventory| {
+            let state = &mut inventory.versions.get_mut(&v2).unwrap().state;
+            state.insert(v1_digest, vec!["a.md".into()]);
+        });
+
+        let found = validate(&obj).unwrap();
+        assert!(
+            found.contains(&Violation::LogicalPathConflict {
+                version: v2,
+                path: "a.md".into(),
+                other: "a.md".into(),
+            }),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_whose_content_paths_conflict_is_reported() {
+        let root = tmp("content-conflict");
+        let obj = committed(&root);
+        let digest = obj.inventory().manifest.keys().next().unwrap().clone();
+        let obj = rewritten(&root, |inventory| {
+            let paths = inventory.manifest.get_mut(&digest).unwrap();
+            let beneath = format!("{}/b", paths[0]);
+            paths.push(beneath);
+        });
+
+        let found = validate(&obj).unwrap();
+        assert!(
+            found.iter().any(
+                |v| matches!(v, Violation::ContentPathConflict { path, other }
+                    if *other == format!("{path}/b"))
             ),
             "{found:?}"
         );
