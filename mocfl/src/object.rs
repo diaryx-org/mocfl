@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use crate::digest::{Digest, DigestAlgorithm};
 use crate::error::{Error, Result};
 use crate::fs::{Storage, join};
-use crate::inventory::{Inventory, User, Version, VersionNum, check_path};
+use crate::inventory::{Inventory, User, Version, VersionNum, check_path, conflicting_paths};
 
 /// The OCFL spec version this crate writes.
 pub const OCFL_VERSION: &str = "ocfl_object_1.1";
@@ -441,9 +441,11 @@ impl<S: Storage> Object<S> {
         let mut state: BTreeMap<Digest, Vec<String>> = BTreeMap::new();
         let mut to_write: Vec<(String, Vec<u8>)> = Vec::new();
         let mut new_manifest: BTreeMap<Digest, Vec<String>> = BTreeMap::new();
+        let mut logical_paths: Vec<String> = Vec::new();
 
         for (logical_path, bytes) in files {
             check_path(&logical_path)?;
+            logical_paths.push(logical_path.clone());
             let digest = self.inventory.digest_algorithm.digest(&bytes)?;
 
             let known =
@@ -465,6 +467,24 @@ impl<S: Storage> Object<S> {
         }
         for paths in state.values_mut() {
             paths.sort();
+        }
+
+        // Each path passed `check_path` on its own; together they must still
+        // make a tree. A path given twice would give two digests one content
+        // path, and a path with another beneath it is refused here rather than
+        // by the filesystem halfway through the writes, or not at all when the
+        // shorter one's bytes are already stored.
+        if let Some((path, other)) = conflicting_paths(logical_paths.iter().map(String::as_str))
+            .into_iter()
+            .next()
+        {
+            return Err(Error::Conflict(if path == other {
+                format!("logical path {path:?} is given twice in version {version}")
+            } else {
+                format!(
+                    "logical path {other:?} lies beneath {path:?}, which is a file in version {version}"
+                )
+            }));
         }
 
         if self.on_disk && self.inventory.versions.contains_key(&version) {
@@ -921,6 +941,78 @@ mod tests {
         );
         assert!(err.is_err());
         assert!(!root.exists(), "a rejected commit leaves nothing behind");
+    }
+
+    #[test]
+    fn one_logical_path_given_twice_is_refused_before_anything_is_written() {
+        // Each copy would get the content path `v1/content/a`, and the second
+        // write would replace the first under the first one's digest.
+        let root = tmp("path-twice");
+        let mut obj = object(&root);
+        let err = obj
+            .commit(
+                [file("a", "x"), file("a", "y")],
+                VersionMeta::at("2026-10-28T00:00:00Z"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+        assert!(err.to_string().contains("\"a\""), "{err}");
+        assert!(!root.exists(), "a rejected commit leaves nothing behind");
+        assert_eq!(obj.head(), None);
+    }
+
+    #[test]
+    fn a_path_and_a_path_beneath_it_are_refused_before_anything_is_written() {
+        let root = tmp("path-beneath");
+        let mut obj = object(&root);
+        let err = obj
+            .commit(
+                [file("a", "x"), file("a/b", "y")],
+                VersionMeta::at("2026-10-28T00:00:00Z"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("\"a\"") && message.contains("\"a/b\""),
+            "names both paths: {message}"
+        );
+        assert!(!root.exists(), "a rejected commit leaves nothing behind");
+    }
+
+    #[test]
+    fn a_path_beneath_one_whose_bytes_are_already_stored_is_refused() {
+        // `a` is in the manifest already, so v2 would write only `a/b` and the
+        // filesystem would never see the conflict.
+        let root = tmp("path-beneath-later");
+        let mut obj = object(&root);
+        obj.commit([file("a", "x")], VersionMeta::at("2026-10-28T00:00:00Z"))
+            .unwrap();
+        let err = obj
+            .commit(
+                [file("a", "x"), file("a/b", "y")],
+                VersionMeta::at("2026-10-28T01:00:00Z"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+        assert!(!root.join("v2").exists(), "nothing of v2 is written");
+        assert_eq!(obj.head(), Some(VersionNum::FIRST));
+        assert_eq!(crate::validate::validate(&obj).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn paths_that_only_share_a_leading_string_do_not_conflict() {
+        // `a-b` and `ab` start with `a` but are not beneath it, and `a-b` sorts
+        // between `a` and `a/b`.
+        let root = tmp("path-shared-start");
+        let mut obj = object(&root);
+        let v1 = obj
+            .commit(
+                [file("a", "1"), file("a-b", "2"), file("ab", "3")],
+                VersionMeta::at("2026-10-28T00:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(obj.read(v1, "a-b").unwrap(), b"2");
     }
 
     #[test]

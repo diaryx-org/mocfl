@@ -427,6 +427,37 @@ pub fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The pairs of paths that cannot stand side by side in one set: a path given
+/// twice, or a path and another beneath it (`a` and `a/b`).
+///
+/// The spec holds the logical paths of each version, and the content paths of
+/// an inventory, to this: each must be unique, and none may be the start of
+/// another, since `a` cannot be both a file and a directory. Each pair is
+/// `(path, other)` with `other` the one equal to `path` or beneath it, in
+/// sorted order.
+pub(crate) fn conflicting_paths<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut sorted: Vec<&str> = paths.into_iter().collect();
+    sorted.sort_unstable();
+
+    let mut found = Vec::new();
+    for (index, path) in sorted.iter().enumerate() {
+        // Every path that starts with `path` sorts right after it, so the scan
+        // stops at the first that does not. Not all of those are beneath it:
+        // `a-b` starts with `a` and sorts between `a` and `a/b`.
+        for other in sorted[index + 1..]
+            .iter()
+            .take_while(|other| other.starts_with(path))
+        {
+            if other.len() == path.len() || other.as_bytes()[path.len()] == b'/' {
+                found.push((*path, *other));
+            }
+        }
+    }
+    found
+}
+
 // ---- fig value helpers ----
 //
 // Mapping is by hand rather than by derive. The spec's shape — digests as map
