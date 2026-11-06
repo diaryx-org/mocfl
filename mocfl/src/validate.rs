@@ -7,10 +7,11 @@
 //!
 //! ## Two depths
 //!
-//! - **Structural** ([`validate`]) reads only the inventory and the directory
+//! - **Structural** ([`validate`]) reads only the inventories and the directory
 //!   listing: is the declaration right, are versions contiguous, does every state
-//!   digest resolve, is every content file where the manifest says. Cheap enough
-//!   to run on every open.
+//!   digest resolve, is every content file where the manifest says, does each
+//!   version directory's inventory agree with the root. Cheap enough to run on
+//!   every open.
 //! - **Deep** ([`validate_deep`]) additionally rehashes every content file. This
 //!   is the bit-rot pass — the question no amount of structural checking can
 //!   answer — and it costs a full read of the object.
@@ -26,11 +27,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::Path;
 
-use crate::digest::Digest;
+use crate::digest::{Digest, DigestAlgorithm};
 use crate::error::Result;
 use crate::fs::{Storage, join};
-use crate::inventory::{VersionNum, conflicting_paths};
+use crate::inventory::{Inventory, Version, VersionNum, conflicting_paths};
 use crate::object::{INVENTORY, Object, declaration_name};
 
 /// One way an object fails to conform.
@@ -123,6 +125,75 @@ pub enum Violation {
         /// The path equal to `path` or beneath it.
         other: String,
     },
+    /// A version directory holds an inventory with no sidecar beside it.
+    VersionSidecarMissing {
+        /// The version whose directory holds the inventory.
+        version: VersionNum,
+        /// The sidecar filename that should have been there.
+        name: String,
+    },
+    /// A version directory's sidecar records a digest that is not its
+    /// inventory's actual digest.
+    VersionSidecarMismatch {
+        /// The version whose directory holds the inventory.
+        version: VersionNum,
+        /// The digest the sidecar claims.
+        recorded: String,
+        /// The digest the inventory bytes actually produce.
+        actual: String,
+    },
+    /// A version directory's inventory cannot be read as an inventory.
+    VersionInventoryUnreadable {
+        /// The version whose directory holds the inventory.
+        version: VersionNum,
+        /// Why it could not be read.
+        detail: String,
+    },
+    /// The root inventory is not byte for byte the inventory in the head
+    /// version's directory.
+    HeadInventoryDiffers {
+        /// The head version.
+        version: VersionNum,
+    },
+    /// A version directory's inventory names a different object from the root.
+    VersionIdDiffers {
+        /// The version whose directory holds the inventory.
+        version: VersionNum,
+        /// The `id` that inventory records.
+        id: String,
+        /// The `id` the root inventory records.
+        root_id: String,
+    },
+    /// A version directory's inventory claims an older spec than the version
+    /// before it. An object's spec version may only move forward.
+    SpecVersionMovedBack {
+        /// The version claiming the older spec.
+        version: VersionNum,
+        /// The `type` it records.
+        type_uri: String,
+        /// The version before it.
+        earlier: VersionNum,
+        /// The `type` that version records.
+        earlier_type_uri: String,
+    },
+    /// A version directory's inventory records a version the root does not.
+    VersionUnknownToRoot {
+        /// The version whose directory holds the inventory.
+        inventory: VersionNum,
+        /// The version block the root inventory lacks.
+        version: VersionNum,
+    },
+    /// A version directory's inventory and the root disagree about what a
+    /// logical path held at a version: one lacks it, or they give it different
+    /// content.
+    VersionStateDiffers {
+        /// The version whose directory holds the inventory.
+        inventory: VersionNum,
+        /// The version block they disagree about.
+        version: VersionNum,
+        /// The logical path they disagree about.
+        logical_path: String,
+    },
 }
 
 /// Say how `other` conflicts with `path`, for a violation's message.
@@ -191,6 +262,52 @@ impl fmt::Display for Violation {
                 "manifest content paths conflict: {}",
                 describe_conflict(path, other)
             ),
+            Self::VersionSidecarMissing { version, name } => {
+                write!(f, "inventory sidecar {version}/{name} is missing")
+            }
+            Self::VersionSidecarMismatch {
+                version,
+                recorded,
+                actual,
+            } => write!(
+                f,
+                "{version}'s inventory sidecar records {recorded} but its inventory hashes to {actual}"
+            ),
+            Self::VersionInventoryUnreadable { version, detail } => {
+                write!(f, "{version}'s inventory could not be read: {detail}")
+            }
+            Self::HeadInventoryDiffers { version } => {
+                write!(f, "the root inventory is not identical to {version}'s")
+            }
+            Self::VersionIdDiffers {
+                version,
+                id,
+                root_id,
+            } => write!(
+                f,
+                "{version}'s inventory has id {id}, but the root's is {root_id}"
+            ),
+            Self::SpecVersionMovedBack {
+                version,
+                type_uri,
+                earlier,
+                earlier_type_uri,
+            } => write!(
+                f,
+                "{version}'s inventory has type {type_uri}, older than {earlier}'s {earlier_type_uri}"
+            ),
+            Self::VersionUnknownToRoot { inventory, version } => write!(
+                f,
+                "{inventory}'s inventory records {version}, which the root does not"
+            ),
+            Self::VersionStateDiffers {
+                inventory,
+                version,
+                logical_path,
+            } => write!(
+                f,
+                "{inventory}'s inventory and the root disagree about {logical_path} at {version}"
+            ),
         }
     }
 }
@@ -237,21 +354,12 @@ fn check<S: Storage>(object: &Object<S>, deep: bool) -> Result<Vec<Violation>> {
 
     // ---- the sidecar over the inventory ----
     let algorithm = inventory.digest_algorithm;
-    let sidecar_name = format!("{INVENTORY}.{algorithm}");
-    match fs.read(&root.join(&sidecar_name)) {
-        Err(_) => found.push(Violation::SidecarMissing { name: sidecar_name }),
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes);
-            let recorded = text.split_whitespace().next().unwrap_or("").to_string();
-            if algorithm.is_computable() {
-                let actual = algorithm.digest(&fs.read(&root.join(INVENTORY))?)?;
-                if !recorded.eq_ignore_ascii_case(actual.as_str()) {
-                    found.push(Violation::SidecarMismatch {
-                        recorded,
-                        actual: actual.to_string(),
-                    });
-                }
-            }
+    let root_bytes = fs.read(&root.join(INVENTORY))?;
+    match sidecar_fault(fs, root, &root_bytes, algorithm)? {
+        None => {}
+        Some(SidecarFault::Missing { name }) => found.push(Violation::SidecarMissing { name }),
+        Some(SidecarFault::Mismatch { recorded, actual }) => {
+            found.push(Violation::SidecarMismatch { recorded, actual });
         }
     }
 
@@ -284,6 +392,9 @@ fn check<S: Storage>(object: &Object<S>, deep: bool) -> Result<Vec<Violation>> {
             found.push(Violation::UnexpectedVersionDirectory { name: name.clone() });
         }
     }
+
+    // ---- each version directory's own inventory agrees with the root ----
+    check_version_inventories(fs, root, inventory, &root_bytes, &mut found)?;
 
     // ---- every state digest resolves through the manifest ----
     for (version, record) in &inventory.versions {
@@ -350,6 +461,226 @@ fn check<S: Storage>(object: &Object<S>, deep: bool) -> Result<Vec<Violation>> {
     Ok(found)
 }
 
+/// What is wrong with the sidecar beside an inventory.
+enum SidecarFault {
+    Missing { name: String },
+    Mismatch { recorded: String, actual: String },
+}
+
+/// Check the sidecar in `dir` against the inventory `bytes` found there.
+///
+/// An algorithm this crate cannot compute leaves only the sidecar's presence
+/// to check.
+fn sidecar_fault<S: Storage>(
+    fs: &S,
+    dir: &Path,
+    bytes: &[u8],
+    algorithm: DigestAlgorithm,
+) -> Result<Option<SidecarFault>> {
+    let name = format!("{INVENTORY}.{algorithm}");
+    let Ok(sidecar) = fs.read(&dir.join(&name)) else {
+        return Ok(Some(SidecarFault::Missing { name }));
+    };
+    if !algorithm.is_computable() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&sidecar);
+    let recorded = text.split_whitespace().next().unwrap_or("").to_string();
+    let actual = algorithm.digest(bytes)?;
+    if recorded.eq_ignore_ascii_case(actual.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some(SidecarFault::Mismatch {
+        recorded,
+        actual: actual.to_string(),
+    }))
+}
+
+/// Hold the inventory in each version directory to the root's.
+///
+/// A version directory's inventory is a SHOULD, so one that is absent is no
+/// violation. These rules bind where one exists.
+fn check_version_inventories<S: Storage>(
+    fs: &S,
+    root: &Path,
+    inventory: &Inventory,
+    root_bytes: &[u8],
+    found: &mut Vec<Violation>,
+) -> Result<()> {
+    // The newest version whose `type` has been read, for the next to follow.
+    let mut last_type: Option<(VersionNum, String)> = None;
+
+    for version in inventory.versions.keys().copied() {
+        let dir = root.join(version.to_string());
+        let path = dir.join(INVENTORY);
+        if !fs.exists(&path)? {
+            continue;
+        }
+        let bytes = match fs.read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                found.push(Violation::VersionInventoryUnreadable {
+                    version,
+                    detail: e.to_string(),
+                });
+                continue;
+            }
+        };
+        if version == inventory.head && bytes != root_bytes {
+            found.push(Violation::HeadInventoryDiffers { version });
+        }
+
+        // An inventory that does not parse names no algorithm of its own, so
+        // the sidecar to look for is the one the root's would have.
+        let parsed = Inventory::parse(&bytes);
+        let algorithm = parsed
+            .as_ref()
+            .map_or(inventory.digest_algorithm, |held| held.digest_algorithm);
+        match sidecar_fault(fs, &dir, &bytes, algorithm)? {
+            None => {}
+            Some(SidecarFault::Missing { name }) => {
+                found.push(Violation::VersionSidecarMissing { version, name });
+            }
+            Some(SidecarFault::Mismatch { recorded, actual }) => {
+                found.push(Violation::VersionSidecarMismatch {
+                    version,
+                    recorded,
+                    actual,
+                });
+            }
+        }
+
+        let held = match parsed {
+            Ok(held) => held,
+            Err(e) => {
+                found.push(Violation::VersionInventoryUnreadable {
+                    version,
+                    detail: e.to_string(),
+                });
+                continue;
+            }
+        };
+        if held.id != inventory.id {
+            found.push(Violation::VersionIdDiffers {
+                version,
+                id: held.id.clone(),
+                root_id: inventory.id.clone(),
+            });
+        }
+        check_spec_order(last_type.as_ref(), version, &held.type_uri, found);
+        check_prior_states(inventory, &held, version, found);
+        last_type = Some((version, held.type_uri));
+    }
+
+    // The root speaks for the head, whether or not its directory holds a copy.
+    check_spec_order(
+        last_type.as_ref(),
+        inventory.head,
+        &inventory.type_uri,
+        found,
+    );
+    Ok(())
+}
+
+/// Report `type_uri`, at `version`, if it claims an older spec than `last`.
+fn check_spec_order(
+    last: Option<&(VersionNum, String)>,
+    version: VersionNum,
+    type_uri: &str,
+    found: &mut Vec<Violation>,
+) {
+    let Some((earlier, earlier_type_uri)) = last else {
+        return;
+    };
+    if let (Some(spec), Some(earlier_spec)) = (spec_of(type_uri), spec_of(earlier_type_uri))
+        && spec < earlier_spec
+    {
+        found.push(Violation::SpecVersionMovedBack {
+            version,
+            type_uri: type_uri.to_string(),
+            earlier: *earlier,
+            earlier_type_uri: earlier_type_uri.clone(),
+        });
+    }
+}
+
+/// The spec version an inventory's `type` names, as `(major, minor)`, or `None`
+/// for a URI that does not have the spec's shape.
+fn spec_of(type_uri: &str) -> Option<(u32, u32)> {
+    let rest = type_uri.strip_prefix("https://ocfl.io/")?;
+    let (spec, _) = rest.split_once('/')?;
+    let (major, minor) = spec.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// Hold every version block in `held`, the inventory in `directory`, to the
+/// same block in the root.
+///
+/// Digests can be compared only under one algorithm. Under two, the content
+/// paths they lead to are what can agree, so those are held to it either way:
+/// the older manifest's paths must all still be listed for that logical path.
+fn check_prior_states(
+    inventory: &Inventory,
+    held: &Inventory,
+    directory: VersionNum,
+    found: &mut Vec<Violation>,
+) {
+    let same_algorithm = held.digest_algorithm == inventory.digest_algorithm;
+    for (version, block) in &held.versions {
+        let Some(root_block) = inventory.versions.get(version) else {
+            found.push(Violation::VersionUnknownToRoot {
+                inventory: directory,
+                version: *version,
+            });
+            continue;
+        };
+        let held_paths = logical_paths(held, block);
+        let root_paths = logical_paths(inventory, root_block);
+        let every_path: BTreeSet<&str> = held_paths
+            .keys()
+            .chain(root_paths.keys())
+            .copied()
+            .collect();
+        for path in every_path {
+            let agrees = match (held_paths.get(path), root_paths.get(path)) {
+                (Some((digest, content)), Some((root_digest, root_content))) => {
+                    (!same_algorithm || digest == root_digest) && content.is_subset(root_content)
+                }
+                _ => false,
+            };
+            if !agrees {
+                found.push(Violation::VersionStateDiffers {
+                    inventory: directory,
+                    version: *version,
+                    logical_path: path.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Each logical path in `block`, with its digest and the content paths that
+/// digest leads to in `inventory`'s manifest.
+fn logical_paths<'a>(
+    inventory: &'a Inventory,
+    block: &'a Version,
+) -> BTreeMap<&'a str, (&'a Digest, BTreeSet<&'a str>)> {
+    block
+        .files()
+        .into_iter()
+        .map(|(path, digest)| {
+            let content = inventory
+                .manifest
+                .get(digest)
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            (path, (digest, content))
+        })
+        .collect()
+}
+
 /// A count of each violation kind, for a one-line summary.
 pub fn summarize(violations: &[Violation]) -> BTreeMap<&'static str, usize> {
     let mut counts = BTreeMap::new();
@@ -367,6 +698,14 @@ pub fn summarize(violations: &[Violation]) -> BTreeMap<&'static str, usize> {
             Violation::ContentUnverifiable { .. } => "content-unverifiable",
             Violation::LogicalPathConflict { .. } => "logical-path-conflict",
             Violation::ContentPathConflict { .. } => "content-path-conflict",
+            Violation::VersionSidecarMissing { .. } => "version-sidecar-missing",
+            Violation::VersionSidecarMismatch { .. } => "version-sidecar-mismatch",
+            Violation::VersionInventoryUnreadable { .. } => "version-inventory-unreadable",
+            Violation::HeadInventoryDiffers { .. } => "head-inventory-differs",
+            Violation::VersionIdDiffers { .. } => "version-id-differs",
+            Violation::SpecVersionMovedBack { .. } => "spec-version-moved-back",
+            Violation::VersionUnknownToRoot { .. } => "version-unknown-to-root",
+            Violation::VersionStateDiffers { .. } => "version-state-differs",
         };
         *counts.entry(key).or_insert(0) += 1;
     }
@@ -376,7 +715,7 @@ pub fn summarize(violations: &[Violation]) -> BTreeMap<&'static str, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::digest::DigestAlgorithm;
+    use crate::digest::{Digest, DigestAlgorithm};
     use crate::fs::StdFs;
     use crate::inventory::Inventory;
     use crate::object::VersionMeta;
@@ -585,6 +924,287 @@ mod tests {
             ),
             "{found:?}"
         );
+    }
+
+    /// Rewrite one version directory's inventory with `edit` applied and its
+    /// sidecar resealed, so that only what the edit says is wrong with it.
+    fn resealed(root: &std::path::Path, version: &str, edit: impl FnOnce(&mut Inventory)) {
+        let dir = root.join(version);
+        let mut inventory = Inventory::parse(&std::fs::read(dir.join(INVENTORY)).unwrap()).unwrap();
+        edit(&mut inventory);
+        let json = inventory.to_json().unwrap();
+        let digest = DigestAlgorithm::Sha256.digest(json.as_bytes()).unwrap();
+        std::fs::write(dir.join(INVENTORY), &json).unwrap();
+        std::fs::write(
+            dir.join("inventory.json.sha256"),
+            format!("{digest}  {INVENTORY}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_head_inventory_is_reported_three_ways() {
+        // The task's repro: junk after the JSON, the sidecar left alone.
+        let root = tmp("junk-head");
+        let obj = committed(&root);
+        let v2 = VersionNum::new(2);
+        let mut json = std::fs::read(root.join("v2").join(INVENTORY)).unwrap();
+        json.extend_from_slice(b"junk\n");
+        std::fs::write(root.join("v2").join(INVENTORY), json).unwrap();
+
+        let found = validate(&obj).unwrap();
+        assert!(
+            found.contains(&Violation::HeadInventoryDiffers { version: v2 }),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(
+                |v| matches!(v, Violation::VersionSidecarMismatch { version, .. } if *version == v2)
+            ),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(
+                |v| matches!(v, Violation::VersionInventoryUnreadable { version, .. } if *version == v2)
+            ),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_head_inventory_other_than_the_root_is_reported() {
+        let root = tmp("head-differs");
+        let obj = committed(&root);
+        let v2 = VersionNum::new(2);
+        resealed(&root, "v2", |inventory| {
+            inventory.versions.get_mut(&v2).unwrap().message = Some("changed".into());
+        });
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::HeadInventoryDiffers { version: v2 }]
+        );
+    }
+
+    #[test]
+    fn a_prior_inventory_whose_state_renamed_a_path_is_reported() {
+        let root = tmp("prior-state");
+        let obj = committed(&root);
+        let v1 = VersionNum::FIRST;
+        resealed(&root, "v1", |inventory| {
+            let state = &mut inventory.versions.get_mut(&v1).unwrap().state;
+            for paths in state.values_mut() {
+                *paths = vec!["renamed.md".to_string()];
+            }
+        });
+
+        let differs = |logical_path: &str| Violation::VersionStateDiffers {
+            inventory: v1,
+            version: v1,
+            logical_path: logical_path.into(),
+        };
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![differs("a.md"), differs("renamed.md")]
+        );
+    }
+
+    #[test]
+    fn a_prior_inventory_giving_a_path_other_bytes_is_reported() {
+        let root = tmp("prior-digest");
+        let obj = committed(&root);
+        let v1 = VersionNum::FIRST;
+        let other = DigestAlgorithm::Sha256.digest(b"other").unwrap();
+        resealed(&root, "v1", |inventory| {
+            let old = inventory.versions[&v1].files()["a.md"].clone();
+            let paths = inventory.manifest.remove(&old).unwrap();
+            inventory.manifest.insert(other.clone(), paths);
+            let state = &mut inventory.versions.get_mut(&v1).unwrap().state;
+            let paths = state.remove(&old).unwrap();
+            state.insert(other.clone(), paths);
+        });
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::VersionStateDiffers {
+                inventory: v1,
+                version: v1,
+                logical_path: "a.md".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_prior_inventory_under_another_algorithm_is_compared_through_content_paths() {
+        // Its digests mean nothing beside the root's, so the content paths they
+        // lead to are what must agree.
+        let root = tmp("algorithm-change");
+        let obj = committed(&root);
+        let v1 = VersionNum::FIRST;
+        let sha512 = Digest::parse(&"a".repeat(128)).unwrap();
+        let rekeyed = |inventory: &mut Inventory| {
+            inventory.digest_algorithm = DigestAlgorithm::Sha512;
+            let old = inventory.versions[&v1].files()["a.md"].clone();
+            let paths = inventory.manifest.remove(&old).unwrap();
+            inventory.manifest.insert(sha512.clone(), paths);
+            let state = &mut inventory.versions.get_mut(&v1).unwrap().state;
+            let paths = state.remove(&old).unwrap();
+            state.insert(sha512.clone(), paths);
+        };
+        let write = |inventory: &Inventory| {
+            let dir = root.join("v1");
+            std::fs::write(dir.join(INVENTORY), inventory.to_json().unwrap()).unwrap();
+            let _ = std::fs::remove_file(dir.join("inventory.json.sha256"));
+            std::fs::write(dir.join("inventory.json.sha512"), "unchecked\n").unwrap();
+        };
+        let mut prior =
+            Inventory::parse(&std::fs::read(root.join("v1/inventory.json")).unwrap()).unwrap();
+        rekeyed(&mut prior);
+        write(&prior);
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![],
+            "same content, other digest"
+        );
+
+        let v2_content = obj
+            .inventory()
+            .content_path(obj.inventory().versions[&VersionNum::new(2)].files()["a.md"]);
+        let elsewhere = format!("{}-not", v2_content.unwrap());
+        prior.manifest.insert(sha512.clone(), vec![elsewhere]);
+        write(&prior);
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::VersionStateDiffers {
+                inventory: v1,
+                version: v1,
+                logical_path: "a.md".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_prior_inventory_recording_a_version_the_root_lacks_is_reported() {
+        let root = tmp("prior-extra");
+        let obj = committed(&root);
+        let v9 = VersionNum::new(9);
+        resealed(&root, "v1", |inventory| {
+            let block = inventory.versions[&VersionNum::FIRST].clone();
+            inventory.versions.insert(v9, block);
+        });
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::VersionUnknownToRoot {
+                inventory: VersionNum::FIRST,
+                version: v9,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_prior_inventory_with_another_id_is_reported() {
+        let root = tmp("prior-id");
+        let obj = committed(&root);
+        resealed(&root, "v1", |inventory| {
+            inventory.id = "urn:example:other".into();
+        });
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::VersionIdDiffers {
+                version: VersionNum::FIRST,
+                id: "urn:example:other".into(),
+                root_id: "urn:example:v".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_version_inventory_with_no_sidecar_is_reported() {
+        let root = tmp("version-sidecar");
+        let obj = committed(&root);
+        let v2 = VersionNum::new(2);
+        std::fs::remove_file(root.join("v2/inventory.json.sha256")).unwrap();
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::VersionSidecarMissing {
+                version: v2,
+                name: "inventory.json.sha256".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_spec_version_moving_back_is_reported_and_moving_forward_is_not() {
+        const OLD: &str = "https://ocfl.io/1.0/spec/#inventory";
+        let root = tmp("spec-back");
+        let mut obj = committed(&root);
+        obj.commit(
+            [("a.md".to_string(), b"three".to_vec())],
+            VersionMeta::at("2026-07-27T11:00:00Z"),
+        )
+        .unwrap();
+
+        resealed(&root, "v1", |inventory| inventory.type_uri = OLD.into());
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![],
+            "1.0 then 1.1 moves forward"
+        );
+
+        resealed(&root, "v2", |inventory| inventory.type_uri = OLD.into());
+        resealed(&root, "v1", |inventory| {
+            inventory.type_uri = crate::inventory::INVENTORY_TYPE.into();
+        });
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::SpecVersionMovedBack {
+                version: VersionNum::new(2),
+                type_uri: OLD.into(),
+                earlier: VersionNum::FIRST,
+                earlier_type_uri: crate::inventory::INVENTORY_TYPE.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_root_older_than_the_last_version_inventory_is_reported() {
+        // With no inventory in the head's directory, the root speaks for it.
+        const NEWER: &str = "https://ocfl.io/1.2/spec/#inventory";
+        let root = tmp("spec-root");
+        let obj = committed(&root);
+        std::fs::remove_file(root.join("v2").join(INVENTORY)).unwrap();
+        std::fs::remove_file(root.join("v2/inventory.json.sha256")).unwrap();
+        resealed(&root, "v1", |inventory| inventory.type_uri = NEWER.into());
+
+        assert_eq!(
+            validate(&obj).unwrap(),
+            vec![Violation::SpecVersionMovedBack {
+                version: VersionNum::new(2),
+                type_uri: crate::inventory::INVENTORY_TYPE.into(),
+                earlier: VersionNum::FIRST,
+                earlier_type_uri: NEWER.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_object_with_no_inventory_in_a_version_directory_validates_clean() {
+        // The spec has a version directory's inventory as SHOULD, not MUST.
+        let root = tmp("no-version-inventories");
+        let mut obj = Object::create(StdFs, &root, "urn:example:v", DigestAlgorithm::Sha256)
+            .with_version_inventories(false);
+        obj.commit(
+            [("a.md".to_string(), b"one".to_vec())],
+            VersionMeta::at("2026-07-27T09:00:00Z"),
+        )
+        .unwrap();
+        assert!(!root.join("v1").join(INVENTORY).exists());
+
+        assert_eq!(validate(&obj).unwrap(), vec![]);
+        assert_eq!(validate_deep(&obj).unwrap(), vec![]);
     }
 
     #[test]
