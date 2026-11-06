@@ -1,12 +1,23 @@
 ---
 title: An unreadable file commits a partial version
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: mocfl commit stops reading at the first file it cannot read and still lands a version, so every path after it is deleted from the head while the command reports failure
 created: 2026-11-06
+updated: 2026-11-06
 ---
 
 # An unreadable file commits a partial version
+
+**Status: done**, by `fix(cli): a commit that cannot read a file lands no
+version`. `Object::try_commit` takes an iterator of `Result`s, and the first
+`Err` abandons the version during staging, before anything is written, so
+`mocfl commit` leaves the object as it was and adds no version however often
+it is run. `commit` is `try_commit` over an iterator that cannot fail, reading
+as lazily as before. `mocfl-cli/tests/commit_unreadable.rs` covers an object
+with a version, a first commit, an unreadable file that sorts first, and the
+commit going through once the file can be read; `src/object.rs` covers the
+library half.
 
 `commit` in `mocfl-cli/src/main.rs` reads the working tree lazily, through
 `map_while`, and hands the iterator to `Object::commit`. A file that cannot be
