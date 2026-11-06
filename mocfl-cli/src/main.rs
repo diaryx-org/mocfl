@@ -449,20 +449,17 @@ fn commit(
     let meta = meta(message, user, email, at)?;
 
     // Read lazily, one file at a time, so a large tree is never all in memory.
-    let mut failed = None;
-    let files = entries
-        .iter()
-        .map_while(|entry| match std::fs::read(&entry.source) {
-            Ok(bytes) => Some((entry.logical.clone(), bytes)),
-            Err(e) => {
-                failed = Some(format!("{}: {e}", entry.source.display()));
-                None
-            }
-        });
-    let version = object.commit(files, meta)?;
-    if let Some(detail) = failed {
-        return Err(format!("could not read {detail}").into());
-    }
+    // A version's state is complete, so a file that cannot be read has to abandon
+    // the commit: leaving it out would record it as deleted.
+    let files = entries.iter().map(|entry| {
+        std::fs::read(&entry.source)
+            .map(|bytes| (entry.logical.clone(), bytes))
+            .map_err(|e| {
+                let detail = format!("could not read {}: {e}", entry.source.display());
+                mocfl::Error::Io(std::io::Error::new(e.kind(), detail))
+            })
+    });
+    let version = object.try_commit(files, meta)?;
 
     let changes = tree::diff(&before, &state_of(&object, version)?);
     report(&changes);

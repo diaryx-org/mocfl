@@ -421,9 +421,27 @@ impl<S: Storage> Object<S> {
     /// The iterator is consumed lazily and one entry at a time, so a caller
     /// streaming a large tree can read each file only as it is reached rather
     /// than materializing the whole vault in memory.
+    ///
+    /// An iterator that ends has said it is complete. One that can fail partway,
+    /// as reading files can, belongs in [`try_commit`](Object::try_commit): ended
+    /// early here, it deletes every path it did not reach.
     pub fn commit(
         &mut self,
         files: impl IntoIterator<Item = (String, Vec<u8>)>,
+        meta: VersionMeta,
+    ) -> Result<VersionNum> {
+        self.try_commit(files.into_iter().map(Ok), meta)
+    }
+
+    /// [`commit`](Object::commit), for files that may fail to arrive.
+    ///
+    /// The first `Err` from `files` is returned as it stands and the version is
+    /// abandoned: nothing has been written by then, so the object on disk, and
+    /// this value, are as they were. `files` is consumed as lazily as `commit`
+    /// consumes it, and nothing after the `Err` is asked for.
+    pub fn try_commit(
+        &mut self,
+        files: impl IntoIterator<Item = Result<(String, Vec<u8>)>>,
         meta: VersionMeta,
     ) -> Result<VersionNum> {
         if !self.inventory.digest_algorithm.is_computable() {
@@ -443,7 +461,8 @@ impl<S: Storage> Object<S> {
         let mut new_manifest: BTreeMap<Digest, Vec<String>> = BTreeMap::new();
         let mut logical_paths: Vec<String> = Vec::new();
 
-        for (logical_path, bytes) in files {
+        for file in files {
+            let (logical_path, bytes) = file?;
             check_path(&logical_path)?;
             logical_paths.push(logical_path.clone());
             let digest = self.inventory.digest_algorithm.digest(&bytes)?;
@@ -602,6 +621,77 @@ mod tests {
         assert!(root.join("inventory.json.sha256").exists());
         assert!(root.join("v1/inventory.json").exists());
         assert_eq!(obj.read(v1, "letter.md").unwrap(), b"Dear Mother,");
+    }
+
+    fn refused() -> Error {
+        Error::Io(std::io::Error::other("refused"))
+    }
+
+    #[test]
+    fn a_failed_file_abandons_a_first_commit() {
+        let root = tmp("try-commit-first");
+        let mut obj = object(&root);
+
+        let err = obj
+            .try_commit(
+                [Ok(file("a.md", "kept")), Err(refused())],
+                VersionMeta::at("2026-11-06T09:00:00Z"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Io(_)), "{err}");
+        assert!(
+            !root.exists(),
+            "nothing is written for an abandoned version"
+        );
+        assert_eq!(obj.head(), None);
+    }
+
+    #[test]
+    fn a_failed_file_abandons_a_later_commit() {
+        let root = tmp("try-commit-later");
+        let mut obj = object(&root);
+        let v1 = obj
+            .commit(
+                [file("a.md", "one"), file("b.md", "two")],
+                VersionMeta::at("2026-11-06T09:00:00Z"),
+            )
+            .unwrap();
+        let inventory = std::fs::read(root.join("inventory.json")).unwrap();
+
+        let mut asked_after = false;
+        let files = [
+            Ok(file("a.md", "changed")),
+            Err(refused()),
+            Ok(file("b.md", "two")),
+        ];
+        let err = obj
+            .try_commit(
+                files.into_iter().inspect(|file| {
+                    asked_after |= file.as_ref().is_ok_and(|(path, _)| path == "b.md");
+                }),
+                VersionMeta::at("2026-11-06T10:00:00Z"),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Io(_)), "{err}");
+        assert!(!asked_after, "nothing after the failure is asked for");
+        assert_eq!(obj.head(), Some(v1));
+        assert!(!root.join("v2").exists());
+        assert_eq!(
+            std::fs::read(root.join("inventory.json")).unwrap(),
+            inventory
+        );
+
+        // The value still describes the disk, so the next version is v2.
+        let v2 = obj
+            .try_commit(
+                [Ok(file("a.md", "changed")), Ok(file("b.md", "two"))],
+                VersionMeta::at("2026-11-06T11:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(v2.to_string(), "v2");
+        assert_eq!(obj.read(v2, "a.md").unwrap(), b"changed");
     }
 
     #[test]

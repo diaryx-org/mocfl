@@ -121,6 +121,8 @@ The object is valid and checksummed the moment `init` returns. Its value is that
 
 `commit` captures a directory whole, so a file it no longer contains is deleted as of that version — that is what makes a version's state complete rather than a delta. `.git`, `.DS_Store` and friends are skipped unless you pass `--include-all`.
 
+A file `commit` cannot read stops it before anything is written. It exits non-zero and the object stays as it was, because leaving the file out would record it as deleted.
+
 Committing an *empty* directory over an object that holds files removes every one of them. That is a legitimate thing to want and also exactly what a mistyped `--from` looks like, so it requires `--allow-empty`. The guard is about destruction, not emptiness: an empty first version needs no flag, because it deletes nothing.
 
 Two commands are worth running just for the intuition:
