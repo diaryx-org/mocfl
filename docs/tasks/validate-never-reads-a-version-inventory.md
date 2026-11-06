@@ -1,12 +1,24 @@
 ---
 title: Validate calls an object valid without reading its version inventories
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: validate compares nothing with a version directory's own inventory, so a corrupt or disagreeing one passes as valid, content verified, where rocfl refuses it
 created: 2026-11-05
+updated: 2026-11-05
 ---
 
 # Validate calls an object valid without reading its version inventories
+
+**Status: done**, by `fix(validate): read each version directory's inventory`.
+`validate` now reads the inventory in every version directory that holds one.
+It reports a sidecar that is missing or disagrees, an inventory that does not
+parse, a head inventory not byte for byte the root's, an `id` that differs, a
+`type` older than the version before it, and a version block whose logical
+state differs from the root's, compared through content paths where the digest
+algorithm changed. The repro exits 1, and the eleven fixtures are caught. So
+are `E011_E013_invalid_padded_head_version`, `E040_head_not_most_recent` and
+`E060_E064_root_inventory_digest_mismatch`, two of each, which all disagree
+with the root too, so the fixtures test reports 68 of 107.
 
 `check` in `mocfl/src/validate.rs` reads the root inventory and its sidecar,
 and never opens `vN/inventory.json` or its sidecar. An object whose version

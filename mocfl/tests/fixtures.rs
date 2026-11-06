@@ -230,3 +230,35 @@ fn objects_the_spec_calls_bad_are_not_reported_clean() {
     );
     assert!(caught > 0, "the validator caught nothing at all");
 }
+
+#[test]
+fn objects_whose_version_inventories_disagree_are_caught() {
+    // Each of these is sound but for what a version directory's inventory says,
+    // so a validator reading only the root calls them valid.
+    if skip("version inventory detection") {
+        return;
+    }
+    let mut checked = 0;
+    for spec in ["1.0", "1.1"] {
+        for path in objects(spec, "bad-objects") {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if ![
+                "E037_inconsistent_id",
+                "E064_different_root_and_latest_inventories",
+                "E066_algorithm_change_state_mismatch",
+                "E066_E092_old_manifest_digest_incorrect",
+                "E066_inconsistent_version_state",
+                "E103_older_spec_v2",
+            ]
+            .contains(&name.as_str())
+            {
+                continue;
+            }
+            let object = Object::open(StdFs, &path).unwrap();
+            let found = validate(&object).unwrap();
+            assert!(!found.is_empty(), "{spec}/{name} reported clean");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 11);
+}

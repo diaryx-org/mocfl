@@ -162,7 +162,7 @@ SHA-256 is pinned to the FIPS 180-4 known-answer vectors, so the hash is *checke
 
 ### Known coverage gaps
 
-The structural validator currently detects 51 of the 107 `bad-objects` fixtures. The rest need checks this crate does not yet make — duplicate digests within a manifest, content outside the content directory, timestamp format rules, cross-inventory consistency between versions. `validate` is honest about being a floor rather than a complete validator, and the fixtures test reports exactly which fixtures go undetected rather than hiding the number.
+The structural validator currently detects 68 of the 107 `bad-objects` fixtures. The rest need checks this crate does not yet make — duplicate digests within a manifest, content outside the content directory, timestamp format rules. `validate` is honest about being a floor rather than a complete validator, and the fixtures test reports exactly which fixtures go undetected rather than hiding the number.
 
 Violations are named in prose rather than by the spec's `E###` codes. The codes are [published](https://github.com/OCFL/spec/blob/main/1.1/spec/validation-codes.md) and mapping onto them is worth doing — but a *wrong* code is worse than no code, since it sends a reader to the wrong clause, so the mapping will be done against that document rather than from memory.
 
