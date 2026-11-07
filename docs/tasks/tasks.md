@@ -8,8 +8,9 @@ contents:
 - '[Commit accepts logical paths that conflict](/docs/tasks/commit-accepts-conflicting-logical-paths.md)'
 - '[Validate calls an object valid without reading its version inventories](/docs/tasks/validate-never-reads-a-version-inventory.md)'
 - '[An unreadable file commits a partial version](/docs/tasks/an-unreadable-file-commits-a-partial-version.md)'
+- '[A padded object commits a version past its width](/docs/tasks/a-padded-object-commits-past-its-width.md)'
 created: 2026-10-22
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # Tasks
