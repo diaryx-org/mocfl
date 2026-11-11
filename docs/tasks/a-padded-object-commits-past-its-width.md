@@ -1,13 +1,25 @@
 ---
 title: A padded object commits a version past its width
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 description: A zero-padded object's next version is allowed one digit wider than the spec permits, so v09 commits v10 and v0999 commits v1000, and validate calls the mixed object clean
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-11
 ---
 
 # A padded object commits a version past its width
+
+**Status: done**, by `fix(inventory): a padded version name stops at the last
+that keeps its zero`. `VersionNum::next` refuses the successor of `v09`,
+`v0999` and every padded name whose successor would fill the width, with
+`Error::Conflict`, and its doc comment names `v0999` as `v0001`'s ceiling. A
+new `Violation::VersionNamesDiffer` reports every version not named the way
+the first is, so `v10` among `v01` … `v09`, or `v2` after `v01`, is no longer
+clean. `src/inventory.rs` covers the ceilings; `src/validate.rs` covers a
+padded object validating clean, one with mixed names, and a padded object at
+`v09` refusing its next commit; `tests/fixtures.rs` checks that
+`E011_E013_invalid_padded_head_version` is reported for its names, in both
+spec versions.
 
 OCFL 1.1 lets an object pad its version numbers, on one condition: "If
 zero-padded version directory numbers are used then they MUST start with the

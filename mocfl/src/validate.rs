@@ -63,6 +63,15 @@ pub enum Violation {
         /// The version absent from the sequence.
         missing: VersionNum,
     },
+    /// A version is not named by the convention the first version sets: every
+    /// name is zero-padded to one width, keeping its leading zero, or none is
+    /// padded (E011, E012, E013). `v10` among `v01` … `v09` is one.
+    VersionNamesDiffer {
+        /// The version whose name breaks the convention.
+        version: VersionNum,
+        /// The first version, whose name sets it.
+        first: VersionNum,
+    },
     /// A version directory exists on disk that the inventory does not know about
     /// — most often an interrupted commit that never reached its commit point.
     UnexpectedVersionDirectory {
@@ -217,6 +226,10 @@ impl fmt::Display for Violation {
             Self::VersionsNotContiguous { missing } => {
                 write!(f, "version {missing} is missing from the sequence")
             }
+            Self::VersionNamesDiffer { version, first } => write!(
+                f,
+                "{version} is not named the way {first} is; every version must use one naming convention"
+            ),
             Self::UnexpectedVersionDirectory { name } => write!(
                 f,
                 "directory {name} is not a version the inventory declares (an interrupted commit?)"
@@ -369,6 +382,22 @@ fn check<S: Storage>(object: &Object<S>, deep: bool) -> Result<Vec<Violation>> {
         let expected = VersionNum::new(n);
         if !declared.iter().any(|v| v.number() == n) {
             found.push(Violation::VersionsNotContiguous { missing: expected });
+        }
+    }
+
+    // ---- every version is named by one convention ----
+    //
+    // The first version's name sets it: unpadded, or padded to its width. A
+    // padded name keeps its leading zero, so `v10` after `v09` is unpadded and
+    // breaks it, which is why `VersionNum::next` refuses to name it.
+    if let Some(first) = declared.first() {
+        for version in &declared {
+            if version.padding() != first.padding() {
+                found.push(Violation::VersionNamesDiffer {
+                    version: *version,
+                    first: *first,
+                });
+            }
         }
     }
 
@@ -690,6 +719,7 @@ pub fn summarize(violations: &[Violation]) -> BTreeMap<&'static str, usize> {
             Violation::SidecarMissing { .. } => "sidecar-missing",
             Violation::SidecarMismatch { .. } => "sidecar-mismatch",
             Violation::VersionsNotContiguous { .. } => "versions-not-contiguous",
+            Violation::VersionNamesDiffer { .. } => "version-names-differ",
             Violation::UnexpectedVersionDirectory { .. } => "unexpected-version-directory",
             Violation::VersionDirectoryMissing { .. } => "version-directory-missing",
             Violation::StateDigestNotInManifest { .. } => "state-digest-not-in-manifest",
@@ -1205,6 +1235,98 @@ mod tests {
 
         assert_eq!(validate(&obj).unwrap(), vec![]);
         assert_eq!(validate_deep(&obj).unwrap(), vec![]);
+    }
+
+    /// Rename version directories as a tool with another naming convention
+    /// would have written them, rewrite every inventory to match with its
+    /// sidecar resealed, and open the object again.
+    fn renamed(root: &std::path::Path, names: &[(&str, &str)]) -> Object<StdFs> {
+        for (from, to) in names {
+            std::fs::rename(root.join(from), root.join(to)).unwrap();
+        }
+        let mut dirs = vec![root.to_path_buf()];
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.join(INVENTORY).is_file() {
+                dirs.push(path);
+            }
+        }
+        for dir in dirs {
+            let mut json = std::fs::read_to_string(dir.join(INVENTORY)).unwrap();
+            for (from, to) in names {
+                json = json
+                    .replace(&format!("\"{from}\""), &format!("\"{to}\""))
+                    .replace(&format!("\"{from}/"), &format!("\"{to}/"));
+            }
+            let digest = DigestAlgorithm::Sha256.digest(json.as_bytes()).unwrap();
+            std::fs::write(dir.join(INVENTORY), &json).unwrap();
+            std::fs::write(
+                dir.join("inventory.json.sha256"),
+                format!("{digest}  {INVENTORY}\n"),
+            )
+            .unwrap();
+        }
+        Object::open(StdFs, root).unwrap()
+    }
+
+    #[test]
+    fn a_padded_object_validates_clean() {
+        let root = tmp("padded");
+        committed(&root);
+        let obj = renamed(&root, &[("v1", "v01"), ("v2", "v02")]);
+        assert_eq!(obj.inventory().head.to_string(), "v02");
+        assert_eq!(validate(&obj).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn versions_named_by_two_conventions_are_reported() {
+        let root = tmp("mixed-names");
+        committed(&root);
+        let obj = renamed(&root, &[("v1", "v01")]);
+
+        let found = validate(&obj).unwrap();
+        assert_eq!(
+            found,
+            vec![Violation::VersionNamesDiffer {
+                version: VersionNum::new(2),
+                first: VersionNum::FIRST,
+            }]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            "v2 is not named the way v01 is; every version must use one naming convention"
+        );
+    }
+
+    #[test]
+    fn a_padded_object_at_its_last_name_commits_no_further() {
+        // The task's repro: an object another tool wrote as v01, v02, … reaches
+        // v09, and the next commit would have to be v10, which drops the
+        // leading zero and so mixes two conventions.
+        let root = tmp("padded-full");
+        committed(&root);
+        let mut obj = renamed(&root, &[("v1", "v01"), ("v2", "v02")]);
+        for n in 3..=9 {
+            let v = obj
+                .commit(
+                    [("a.md".to_string(), format!("{n}").into_bytes())],
+                    VersionMeta::at("2026-07-27T11:00:00Z"),
+                )
+                .unwrap();
+            assert_eq!(v.to_string(), format!("v0{n}"));
+        }
+        let err = obj
+            .commit(
+                [("a.md".to_string(), b"ten".to_vec())],
+                VersionMeta::at("2026-07-27T12:00:00Z"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::Conflict(_)), "{err}");
+        assert!(!root.join("v10").exists());
+
+        let obj = Object::open(StdFs, &root).unwrap();
+        assert_eq!(obj.inventory().head.to_string(), "v09");
+        assert_eq!(validate(&obj).unwrap(), vec![]);
     }
 
     #[test]
