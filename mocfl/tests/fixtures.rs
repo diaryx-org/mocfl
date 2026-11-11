@@ -262,3 +262,31 @@ fn objects_whose_version_inventories_disagree_are_caught() {
     }
     assert_eq!(checked, 11);
 }
+
+#[test]
+fn an_object_whose_padded_names_lose_their_zero_is_caught_by_its_names() {
+    // v01 … v09 then v10: the name a padded counter reaches when it runs past
+    // its width. The fixture is caught elsewhere too, so ask for the reason.
+    if skip("padded version names") {
+        return;
+    }
+    let mut checked = 0;
+    for spec in ["1.0", "1.1"] {
+        for path in objects(spec, "bad-objects") {
+            if path.file_name().unwrap() != "E011_E013_invalid_padded_head_version" {
+                continue;
+            }
+            let object = Object::open(StdFs, &path).unwrap();
+            let found = validate(&object).unwrap();
+            assert!(
+                found.iter().any(|v| matches!(
+                    v,
+                    Violation::VersionNamesDiffer { version, .. } if version.to_string() == "v10"
+                )),
+                "{spec}: {found:?}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2);
+}

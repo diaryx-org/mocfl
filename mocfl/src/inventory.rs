@@ -93,12 +93,15 @@ impl VersionNum {
 
     /// The next version, keeping this one's padding convention.
     ///
-    /// A padded scheme has a hard ceiling — `v0001` cannot represent 10000 — and
-    /// the spec forbids widening mid-object, so overflowing it is a real error
-    /// rather than something to paper over.
+    /// A padded scheme has a hard ceiling. Its names keep their leading zero, so
+    /// `v0001` runs to `v0999` and no further: `v1000` fills the width, reads
+    /// back unpadded, and is another naming convention. The spec forbids
+    /// widening mid-object, so reaching the ceiling is a real error rather than
+    /// something to paper over.
     pub fn next(self) -> Result<Self> {
         let number = self.number + 1;
-        if self.padding != 0 && number.to_string().len() > self.padding - 1 {
+        // `padding` counts the `v`, then the leading zero, then the digits.
+        if self.padding != 0 && number.to_string().len() > self.padding - 2 {
             return Err(Error::Conflict(format!(
                 "version {self} exhausts its zero-padded width; the spec forbids widening it"
             )));
@@ -649,22 +652,28 @@ mod tests {
 
     #[test]
     fn a_padded_version_exhausting_its_width_is_refused_rather_than_widened() {
-        // An object numbering v01, v02, … cannot reach 100 without widening every
+        // An object numbering v01, v02, … cannot reach 10 without widening every
         // name, and the spec forbids changing the width mid-object. Refusing
         // beats writing an object no validator will accept.
         let mut v = VersionNum::parse("v01").unwrap();
         while let Ok(next) = v.next() {
             v = next;
         }
-        assert_eq!(v.to_string(), "v99", "the last name this width can hold");
-        // Room still inside the width is fine: v0999 -> v1000 is 5 characters either way.
+        assert_eq!(v.to_string(), "v09", "the last name this width can hold");
+        // A padded name must keep its leading zero, so a successor that fills
+        // the width is past it: OCFL's five-digit example allows v00001 to
+        // v09999, and not v10000. `v1000` would read back unpadded.
+        for last in ["v09", "v0999", "v09999"] {
+            let err = VersionNum::parse(last).unwrap().next().unwrap_err();
+            assert!(matches!(err, Error::Conflict(_)), "{last}: {err}");
+        }
         assert_eq!(
-            VersionNum::parse("v0999")
+            VersionNum::parse("v0998")
                 .unwrap()
                 .next()
                 .unwrap()
                 .to_string(),
-            "v1000"
+            "v0999"
         );
         // The unpadded style has no ceiling at all.
         assert_eq!(VersionNum::new(999).next().unwrap().to_string(), "v1000");
